@@ -53,7 +53,7 @@ app.post("/api/score", async (req, res) => {
 
     if (existing) {
       // 기록이 있으면 -> 점수가 더 높을 때만 갱신
-      if (score > existing.score) {
+      if (score >= existing.score) {
         existing.score = score;
         existing.userName = userName;
         existing.level = level || 1; // 레벨도 최신으로 업데이트
