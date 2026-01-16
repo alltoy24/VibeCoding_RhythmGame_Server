@@ -28,7 +28,8 @@ const scoreSchema = new mongoose.Schema({
   userName: String,
   song: String,
   diff: String,
-  score: Number
+  score: Number,
+  level: Number // ★ 레벨 칸 추가됨
 });
 const Score = mongoose.model("Score", scoreSchema);
 
@@ -46,24 +47,23 @@ const User = mongoose.model("User", userSchema);
 
 // [기능 1] 점수 저장 (신기록일 때만 갱신)
 app.post("/api/score", async (req, res) => {
-  const { userId, userName, song, diff, score } = req.body;
+  const { userId, userName, song, diff, score, level } = req.body; // ★ level 받기
 
   try {
-    // 이미 기록이 있는지 확인
     const existing = await Score.findOne({ userId, song, diff });
 
     if (existing) {
-      // 기록이 있으면 -> 더 높을 때만 업데이트
       if (score > existing.score) {
         existing.score = score;
-        existing.userName = userName; // 닉네임 변경 반영
+        existing.userName = userName;
+        existing.level = level || 1; // ★ 신기록 갱신 시 레벨도 최신화
         await existing.save();
-        console.log(`[신기록 갱신] ${userName} - ${song}: ${score}`);
+        console.log(`[UP] ${userName} : ${score}`);
       }
     } else {
-      // 기록이 없으면 -> 새로 만들기
-      await Score.create({ userId, userName, song, diff, score });
-      console.log(`[첫 기록] ${userName} - ${song}: ${score}`);
+      // ★ 새 기록 작성 시 레벨 포함
+      await Score.create({ userId, userName, song, diff, score, level: level || 1 });
+      console.log(`[NEW] ${userName} : ${score}`);
     }
     res.json({ success: true });
   } catch (e) {
@@ -73,13 +73,13 @@ app.post("/api/score", async (req, res) => {
 });
 
 // [기능 2] 랭킹 조회 (TOP 10)
+// [수정 3] 랭킹 조회 시 50등까지 늘리기 (app.get("/api/ranking"...) 부분)
 app.get("/api/ranking/:song/:diff", async (req, res) => {
   const { song, diff } = req.params;
   try {
-    // DB에서 조건에 맞는거 찾아서 -> 점수 내림차순 -> 10개만 가져오기
     const leaderboard = await Score.find({ song, diff })
       .sort({ score: -1 })
-      .limit(10);
+      .limit(50); // ★ 10 -> 50으로 변경
     res.json(leaderboard);
   } catch (e) {
     res.status(500).json([]);
