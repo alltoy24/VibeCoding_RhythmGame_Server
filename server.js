@@ -7,10 +7,10 @@ app.use(express.json());
 app.use(cors());
 
 // ==========================================
-// ★ 1. MongoDB 연결 (비밀번호 꼭 넣으세요!)
+// ★ 1. MongoDB 연결
 // ==========================================
-// ▼▼▼ 여기에 비밀번호 입력 ▼▼▼
-const PASSWORD = "uokq9LwPpZdi0bd9"; 
+// ▼▼▼ 비밀번호 꼭 다시 넣으세요! ▼▼▼
+const PASSWORD = "여기에_비밀번호_입력"; 
 const MONGO_URI = `mongodb+srv://yunhogim528_db_user:${PASSWORD}@trollbeatserverdata.9tidzxa.mongodb.net/?retryWrites=true&w=majority&appName=TrollBeatServerData`;
 
 mongoose.connect(MONGO_URI)
@@ -18,21 +18,24 @@ mongoose.connect(MONGO_URI)
   .catch(err => console.error("🔥 DB 연결 실패:", err));
 
 // ==========================================
-// ★ 2. 데이터 모델 (장부 양식)
+// ★ 2. 데이터 모델 (강력한 중복 방지 적용)
 // ==========================================
 
-// 랭킹 장부 (레벨 항목 추가됨)
 const scoreSchema = new mongoose.Schema({
   userId: String,
   userName: String,
   song: String,
   diff: String,
   score: Number,
-  level: Number // ★ 추가됨
+  level: Number
 });
+
+// ★★★ [핵심] 유저+곡+난이도 조합은 유일해야 한다! (중복 원천 차단)
+scoreSchema.index({ userId: 1, song: 1, diff: 1 }, { unique: true });
+
 const Score = mongoose.model("Score", scoreSchema);
 
-// 유저 레벨 장부
+// 유저 레벨 모델
 const userSchema = new mongoose.Schema({
   userId: String,
   level: Number,
@@ -44,29 +47,33 @@ const User = mongoose.model("User", userSchema);
 // ★ 3. API 기능들
 // ==========================================
 
-// [기능 1] 점수 저장 (신기록 & 레벨 동시 저장)
+// [기능 1] 점수 저장 (중복 방지 로직 적용)
 app.post("/api/score", async (req, res) => {
   const { userId, userName, song, diff, score, level } = req.body;
 
   try {
-    const existing = await Score.findOne({ userId, song, diff });
+    // 1. 일단 업데이트를 시도해본다. (기록이 있으면 점수 비교 후 갱신)
+    // $max: 점수가 기존보다 높을 때만 수정함
+    // $set: 이름과 레벨은 무조건 최신으로 수정함
+    // upsert: true -> 없으면 새로 만듦
+    await Score.updateOne(
+      { userId, song, diff }, 
+      { 
+        $max: { score: score }, 
+        $set: { userName: userName, level: level || 1 } 
+      },
+      { upsert: true }
+    );
 
-    if (existing) {
-      // 기록이 있으면 -> 점수가 더 높을 때만 갱신
-      if (score >= existing.score) {
-        existing.score = score;
-        existing.userName = userName;
-        existing.level = level || 1; // 레벨도 최신으로 업데이트
-        await existing.save();
-        console.log(`[UP] ${userName} - ${song}: ${score}`);
-      }
-    } else {
-      // 기록이 없으면 -> 새로 만듦
-      await Score.create({ userId, userName, song, diff, score, level: level || 1 });
-      console.log(`[NEW] ${userName} - ${song}: ${score}`);
-    }
+    console.log(`[SAVE] ${userName} - ${song}: ${score}`);
     res.json({ success: true });
+
   } catch (e) {
+    // 혹시라도 동시에 들어와서 충돌나면 무시 (어차피 하나는 저장됨)
+    if (e.code === 11000) {
+        console.log("⚠️ 중복 저장 방어 성공");
+        return res.json({ success: true });
+    }
     console.error(e);
     res.status(500).json({ error: "DB Error" });
   }
@@ -77,11 +84,10 @@ app.get("/api/ranking/:song/:diff", async (req, res) => {
   const { song, diff } = req.params;
   try {
     const leaderboard = await Score.find({ song, diff })
-      .sort({ score: -1 }) // 점수 높은 순
-      .limit(50);          // 50등까지 자르기
+      .sort({ score: -1 })
+      .limit(50);
     res.json(leaderboard);
   } catch (e) {
-    console.error(e);
     res.status(500).json([]);
   }
 });
@@ -107,15 +113,12 @@ app.post("/api/user/update", async (req, res) => {
       { level, xp },
       { upsert: true, new: true }
     );
-    // console.log(`[USER] ${userId} -> LV.${level}`);
     res.json({ success: true });
   } catch (e) {
-    console.error(e);
     res.status(500).json({ error: "DB Error" });
   }
 });
 
-// 서버 실행
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
