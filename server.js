@@ -10,7 +10,7 @@ app.use(cors());
 // ★ 1. MongoDB 연결
 // ==========================================
 // ▼▼▼ 비밀번호 꼭 다시 넣으세요! ▼▼▼
-const PASSWORD = "여기에_비밀번호_입력"; 
+const PASSWORD = "uokq9LwPpZdi0bd9"; 
 const MONGO_URI = `mongodb+srv://yunhogim528_db_user:${PASSWORD}@trollbeatserverdata.9tidzxa.mongodb.net/?retryWrites=true&w=majority&appName=TrollBeatServerData`;
 
 mongoose.connect(MONGO_URI)
