@@ -1,66 +1,119 @@
+require("dotenv").config(); // .env 파일 로드
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
+const helmet = require("helmet"); // 보안 헤더 설정
+const rateLimit = require("express-rate-limit"); // 도배 방지
+
 const app = express();
 
-app.use(express.json());
+// ==========================================
+// ★ 1. 보안 미들웨어 설정
+// ==========================================
+app.use(helmet()); // HTTP 헤더 보안
+app.use(express.json({ limit: '10kb' })); // 요청 데이터 크기 제한 (DDOS 방지)
 app.use(cors());
 
-// ==========================================
-// ★ 1. MongoDB 연결
-// ==========================================
-const PASSWORD = "uokq9LwPpZdi0bd9"; 
-const MONGO_URI = `mongodb+srv://yunhogim528_db_user:${PASSWORD}@trollbeatserverdata.9tidzxa.mongodb.net/?retryWrites=true&w=majority&appName=TrollBeatServerData`;
+// [도배 방지] 15분에 100번까지만 요청 가능 (IP 기준)
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, 
+    max: 100, 
+    message: { error: "요청이 너무 많습니다. 잠시 후 다시 시도해주세요." }
+});
+app.use("/api/", limiter);
 
-mongoose.connect(MONGO_URI)
-  .then(() => console.log("✅ MongoDB 연결 성공!"))
+// ==========================================
+// ★ 2. MongoDB 연결 (환경변수 사용)
+// ==========================================
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => console.log("✅ MongoDB 연결 성공! (SECURE MODE)"))
   .catch(err => console.error("🔥 DB 연결 실패:", err));
 
 // ==========================================
-// ★ 2. 데이터 모델
+// ★ 3. 데이터 모델
 // ==========================================
-
-// 랭킹 점수 모델
 const scoreSchema = new mongoose.Schema({
   userId: String,
-  userName: String, // 랭킹에 표시될 닉네임
+  userName: String,
   song: String,
   diff: String,
   score: Number,
-  level: Number
+  level: Number,
+  timestamp: { type: Date, default: Date.now } // 기록 시간 자동 저장
 });
-// 유저+곡+난이도 조합은 유일함 (중복 방지)
 scoreSchema.index({ userId: 1, song: 1, diff: 1 }, { unique: true });
 const Score = mongoose.model("Score", scoreSchema);
 
-// 유저 정보 모델 (닉네임 필드 추가됨!)
 const userSchema = new mongoose.Schema({
   userId: String,
-  nickname: String, // ★ [NEW] 닉네임 저장용
+  nickname: String,
   level: Number,
   xp: Number
 });
 const User = mongoose.model("User", userSchema);
 
 // ==========================================
-// ★ 3. API 기능들
+// ★ 4. 보안 검증 함수 (핵심!)
+// ==========================================
+const verifySignature = (req, res, next) => {
+    // 클라이언트에서 보낸 데이터
+    const { userId, score, signature, playTime } = req.body;
+    
+    // 1. 필수 데이터 누락 확인
+    if (!userId || !score || !signature) {
+        return res.status(400).json({ error: "잘못된 요청입니다." });
+    }
+
+    // 2. 플레이 타임 검증 (최소 10초)
+    // (서버에서도 한 번 더 체크)
+    if (playTime && playTime < 10000) {
+        console.warn(`🚨 [HACK DETECTED] PlayTime too short: ${playTime}ms (${userId})`);
+        return res.status(403).json({ error: "비정상적인 플레이 감지됨" });
+    }
+
+    // 3. 서명(Signature) 위변조 검증
+    // 서버가 가진 비밀키(SECRET_SALT)로 똑같이 만들어보고, 클라이언트 것과 비교
+    // 클라이언트 로직: btoa(Math.round(score) + secret + userId)
+    // 주의: 클라이언트 로직과 토씨 하나 틀리지 않고 똑같이 조합해야 함
+    const serverSecret = process.env.SECRET_SALT;
+    const rawString = Math.round(score) + serverSecret + userId;
+    const expectedSignature = btoa(rawString); // Node.js v16+에서는 btoa 기본 지원
+
+    if (signature !== expectedSignature) {
+        console.warn(`🚨 [HACK DETECTED] Signature Mismatch! User: ${userId}`);
+        return res.status(403).json({ error: "데이터 변조가 감지되었습니다." });
+    }
+
+    // 통과하면 다음 단계로
+    next();
+};
+
+// ==========================================
+// ★ 5. API 기능들
 // ==========================================
 
-// [기능 1] 점수 저장
-app.post("/api/score", async (req, res) => {
-  // 클라이언트가 보낸 닉네임을 userName으로 받음
+// [기능 1] 점수 저장 (보안 미들웨어 `verifySignature` 장착!)
+app.post("/api/score", verifySignature, async (req, res) => {
   const { userId, userName, song, diff, score, level } = req.body;
 
   try {
+    // 몽고DB Injection 방지를 위한 타입 변환
+    const cleanScore = Number(score);
+    const cleanLevel = Number(level);
+
+    if (isNaN(cleanScore) || cleanScore > 1000000) { // 100만점 초과 방지
+        return res.status(400).json({ error: "유효하지 않은 점수입니다." });
+    }
+
     await Score.updateOne(
       { userId, song, diff }, 
       { 
-        $max: { score: score }, 
-        $set: { userName: userName, level: level || 1 } 
+        $max: { score: cleanScore }, 
+        $set: { userName: userName, level: cleanLevel || 1 } 
       },
       { upsert: true }
     );
-    console.log(`[SCORE] ${userName} - ${song}: ${score}`);
+    console.log(`[SCORE] ${userName} - ${song}: ${cleanScore} (Verified)`);
     res.json({ success: true });
   } catch (e) {
     if (e.code === 11000) return res.json({ success: true });
@@ -75,64 +128,55 @@ app.get("/api/ranking/:song/:diff", async (req, res) => {
   try {
     const leaderboard = await Score.find({ song, diff })
       .sort({ score: -1 })
-      .limit(50);
+      .limit(50)
+      .select('userName score level -_id'); // 필요한 필드만 전송 (보안)
     res.json(leaderboard);
   } catch (e) {
     res.status(500).json([]);
   }
 });
 
-// [기능 3] 내 정보 가져오기 (닉네임 포함)
+// [기능 3] 유저 정보 조회
 app.get("/api/user/:userId", async (req, res) => {
   const { userId } = req.params;
   try {
     let user = await User.findOne({ userId });
-    
-    // 유저 정보가 없으면 기본값 리턴
-    if (!user) {
-        user = { level: 1, xp: 0, nickname: null };
-    }
+    if (!user) user = { level: 1, xp: 0, nickname: null };
     res.json(user);
   } catch (e) {
     res.status(500).json({ level: 1, xp: 0, nickname: null });
   }
 });
 
-// [기능 4] 내 정보 업데이트 (닉네임 동기화 기능 추가)
+// [기능 4] 유저 정보 업데이트
 app.post("/api/user/update", async (req, res) => {
   const { userId, level, xp, nickname } = req.body;
   
-  // 업데이트할 데이터 꾸리기
-  const updateData = {};
-  if (level !== undefined) updateData.level = level;
-  if (xp !== undefined) updateData.xp = xp;
-  if (nickname !== undefined) updateData.nickname = nickname;
-
   try {
-    // 1. 유저 테이블 업데이트
+    const updateData = {};
+    if (level !== undefined) updateData.level = Number(level);
+    if (xp !== undefined) updateData.xp = Number(xp);
+    if (nickname !== undefined) updateData.nickname = String(nickname).substring(0, 12); // 길이 제한
+
     await User.findOneAndUpdate(
       { userId },
       { $set: updateData },
       { upsert: true, new: true }
     );
 
-    // ★ 2. 만약 닉네임이 바뀌었다면? -> 랭킹판(Score)에 있는 내 이름도 싹 다 바꾼다!
     if (nickname) {
         await Score.updateMany(
             { userId: userId },
             { $set: { userName: nickname } }
         );
-        console.log(`[UPDATE] 유저(${userId}) 닉네임 변경 및 랭킹 동기화 완료: ${nickname}`);
     }
-
     res.json({ success: true });
   } catch (e) {
-    console.error(e);
     res.status(500).json({ error: "DB Error" });
   }
 });
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+  console.log(`🛡️ Secure Server running on port ${port}`);
 });
