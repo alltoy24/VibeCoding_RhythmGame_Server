@@ -7,6 +7,9 @@ const rateLimit = require("express-rate-limit"); // 도배 방지
 
 const app = express();
 
+// ★ [필수] 프록시 신뢰 설정 (Cloudtype/Heroku 등 배포 시 필수)
+app.set('trust proxy', 1);
+
 // ==========================================
 // ★ 1. 보안 미들웨어 설정
 // ==========================================
