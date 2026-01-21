@@ -59,35 +59,44 @@ const User = mongoose.model("User", userSchema);
 // ★ 4. 보안 검증 함수 (핵심!)
 // ==========================================
 const verifySignature = (req, res, next) => {
-    // 클라이언트에서 보낸 데이터
-    const { userId, score, signature, playTime } = req.body;
+    // 1. 클라이언트가 보낸 데이터 받기 (maxCombo 꼭 받아야 함!)
+    const { userId, score, maxCombo, signature, playTime } = req.body;
     
-    // 1. 필수 데이터 누락 확인
-    if (!userId || !score || !signature) {
-        return res.status(400).json({ error: "잘못된 요청입니다." });
+    // 2. 필수 데이터 누락 확인
+    if (!userId || score === undefined || maxCombo === undefined || !signature) {
+        console.log("❌ 데이터 누락:", { userId, score, maxCombo, signature });
+        return res.status(400).json({ error: "잘못된 요청입니다. (필수 데이터 누락)" });
     }
 
-    // 2. 플레이 타임 검증 (최소 10초)
-    // (서버에서도 한 번 더 체크)
+    // 3. 플레이 타임 검증 (그대로 유지)
     if (playTime && playTime < 10000) {
-        console.warn(`🚨 [HACK DETECTED] PlayTime too short: ${playTime}ms (${userId})`);
+        console.warn(`🚨 [HACK] PlayTime too short: ${playTime}ms (${userId})`);
         return res.status(403).json({ error: "비정상적인 플레이 감지됨" });
     }
 
-    // 3. 서명(Signature) 위변조 검증
-    // 서버가 가진 비밀키(SECRET_SALT)로 똑같이 만들어보고, 클라이언트 것과 비교
-    // 클라이언트 로직: btoa(Math.round(score) + secret + userId)
-    // 주의: 클라이언트 로직과 토씨 하나 틀리지 않고 똑같이 조합해야 함
-    const serverSecret = process.env.SECRET_SALT;
-    const rawString = Math.round(score) + serverSecret + userId;
-    const expectedSignature = btoa(rawString); // Node.js v16+에서는 btoa 기본 지원
+    // 4. ★★★ [핵심 수정] 서명 검증 로직 일치시키기 ★★★
+    // 클라이언트의 로직: `${userId}_${score}_${maxCombo}_${SECRET_SALT}`
+    // 서버도 똑같이 만들어야 함!
+    const serverSecret = process.env.SECRET_SALT || "WebBeat_Secure_Key_2026_Ver42"; // 클라이언트와 키가 같아야 함!
+    
+    // 순서: 아이디_점수_콤보_비밀키 (언더바 필수)
+    const rawString = `${userId}_${score}_${maxCombo}_${serverSecret}`;
+    
+    // Base64 인코딩 (Node.js 방식)
+    const expectedSignature = Buffer.from(rawString).toString('base64');
 
+    // 5. 비교 (로그 찍어서 확인)
     if (signature !== expectedSignature) {
-        console.warn(`🚨 [HACK DETECTED] Signature Mismatch! User: ${userId}`);
+        console.log("---------------------------------------");
+        console.log("🚨 [서명 불일치] 해킹 의심!");
+        console.log("📥 클라이언트가 보낸 것:", signature);
+        console.log("💻 서버가 계산한 것:    ", expectedSignature);
+        console.log("🔑 서버 원본 문자열:    ", rawString); // 이게 클라이언트랑 같은지 확인 필요
+        console.log("---------------------------------------");
         return res.status(403).json({ error: "데이터 변조가 감지되었습니다." });
     }
 
-    // 통과하면 다음 단계로
+    // 통과!
     next();
 };
 
