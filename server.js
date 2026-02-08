@@ -111,12 +111,38 @@ const verifySignature = (req, res, next) => {
 let rooms = {}; 
 let roomSeq = 1; 
 
-// Song Database
 const SONG_DB = [
-    { folder: "NewEra", title: "New Era", artist: "Alltoy24", charts: ["normal_4.json", "hard_8.json", "troll_11.json"] },
-    { folder: "세계수의정원", title: "Garden of Yggdrasil", artist: "Alltoy24", charts: ["normal_1.json", "hard_6.json", "troll_13.json"] },
-    { folder: "Test", title: "Test Map", artist: "Alltoy24", charts: ["normal_2.json"] }
-];
+  {
+    "folder": "NewEra",
+    "title": "New Era",
+    "artist": "Alltoy24",
+    "charts": ["normal_4.json", "hard_8.json","troll_11.json"]
+  },
+  {
+    "folder": "세계수의정원",
+    "title": "세계수의 정원",
+    "artist": "Alltoy24",
+    "charts": ["normal_1.json", "hard_6.json", "troll_13.json"]
+  },
+  {
+    "folder": "SystemOverload",
+    "title": "System Overload",
+    "artist": "Alltoy24",
+    "charts": ["normal_5.json", "troll_16.json"]
+  },
+  {
+    "folder": "SuddenAccelerationOfEmpty",
+    "title": "Sudden Acceleration Of Empty",
+    "artist": "Alltoy24",
+    "charts": ["hard_14.json", "troll_17.json"]
+  },
+  {
+    "folder": "BreakGlassDayDream",
+    "title": "Break Glass Daydream",
+    "artist": "Alltoy24",
+    "charts": ["troll_15.json"]
+  }
+]
 
 function getRoomList() {
     return Object.values(rooms).map(r => ({
