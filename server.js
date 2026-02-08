@@ -283,8 +283,7 @@ io.on("connection", (socket) => {
     });
 
     socket.on("send_score", (data) => {
-        // data: { roomId, score, combo, lane }
-        // 같은 방에 있는 다른 사람(상대방)에게만 전송
+        // 내 점수를 같은 방의 다른 사람(상대방)에게 전달
         socket.to(data.roomId).emit("opponent_update", data);
     });
 
