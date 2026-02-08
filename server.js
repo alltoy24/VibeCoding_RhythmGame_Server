@@ -298,11 +298,13 @@ io.on("connection", (socket) => {
         }
 
         // 3. ★ DB에서 참가자 RP 조회
-        let userRating = 1000;
-        try {
-            const userDoc = await User.findOne({ nickname: nickname });
-            if (userDoc) userRating = userDoc.rating;
-        } catch(e) { console.error(e); }
+        let userRating = rp || 1000;
+        if (!rp) {
+            try {
+                const userDoc = await User.findOne({ nickname: nickname });
+                if (userDoc) userRating = userDoc.rating;
+            } catch(e) { console.error(e); }
+        }
 
         // 4. 참가 처리
         room.players.push({ 
@@ -342,11 +344,15 @@ io.on("connection", (socket) => {
             // 방이 없으면 생성 (여기도 RP 조회 추가)
             const roomId = `room_${roomSeq++}`;
             
-            let userRating = 1000;
-            try {
-                const userDoc = await User.findOne({ nickname: data.nickname });
-                if (userDoc) userRating = userDoc.rating;
-            } catch(e) {}
+            // ★ [수정] 받은 rp 우선 사용
+            let userRating = data.rp || 1000;
+            
+            if (!data.rp) {
+                try {
+                    const userDoc = await User.findOne({ nickname: data.nickname });
+                    if (userDoc) userRating = userDoc.rating;
+                } catch(e) {}
+            }
 
             rooms[roomId] = {
                 id: roomId,
