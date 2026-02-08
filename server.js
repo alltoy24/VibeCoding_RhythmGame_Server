@@ -223,18 +223,50 @@ io.on("connection", (socket) => {
         if (room && room.hostId === socket.id && room.players.length === 2) {
             room.status = "PLAYING";
             
-            // 곡 랜덤 선정 (혹은 선택된 곡)
-            const songs = ["Alien", "Aurora", "BlackBox"]; // 예시
-            const selectedSong = songs[Math.floor(Math.random() * songs.length)];
+            // 1. 서버에 곡 데이터 하드코딩 (또는 파일 로드)
+            // 사용자가 제공한 song_list.json 구조를 그대로 가져옵니다.
+            const songDB = [
+              {
+                "folder": "NewEra",
+                "title": "New Era",
+                "artist": "Alltoy24",
+                "charts": ["normal_4.json", "hard_8.json", "troll_11.json"]
+              },
+              {
+                "folder": "세계수의정원",
+                "title": "세계수의 정원",
+                "artist": "Alltoy24",
+                "charts": ["normal_1.json", "hard_6.json", "troll_13.json"]
+              },
+              {
+                "folder": "Test",
+                "title": "Test Map",
+                "artist": "Alltoy24",
+                "charts": ["normal_2.json"]
+              }
+            ];
 
-            // 3초 뒤 시작 신호
-            const startTime = Date.now() + 3000;
+            // 2. 랜덤 곡 선정
+            const randomSong = songDB[Math.floor(Math.random() * songDB.length)];
+            
+            // 3. 해당 곡의 랜덤 난이도(Chart) 선정
+            // 예: "hard_8.json"
+            const randomChart = randomSong.charts[Math.floor(Math.random() * randomSong.charts.length)];
+            
+            // 파일명에서 확장자 제거 (클라이언트가 식별할 ID) -> "hard_8"
+            const diffKey = randomChart.replace(".json", "");
+
+            console.log(`🚀 게임 시작: ${roomId} | 곡: ${randomSong.title} | 난이도: ${diffKey}`);
+
+            // 4. 클라이언트에게 전송 (곡 폴더명 + 난이도 키)
             io.to(roomId).emit("game_start", { 
-                song: selectedSong, 
-                startTime: startTime 
+                songFolder: randomSong.folder, // 폴더명 (NewEra)
+                songTitle: randomSong.title,   // 제목 (New Era)
+                songArtist: randomSong.artist, // 아티스트
+                diffKey: diffKey,              // 난이도 파일명 (hard_8)
+                startTime: Date.now() + 21000  // 21초 뒤 시작
             });
             
-            // 로비 목록 갱신 (상태 변경)
             io.emit("update_room_list", Object.values(rooms));
         }
     });
