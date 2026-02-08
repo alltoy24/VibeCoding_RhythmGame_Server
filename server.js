@@ -298,8 +298,8 @@ io.on("connection", (socket) => {
         }
 
         // 3. ★ DB에서 참가자 RP 조회
-        let userRating = rp || 1000;
-        if (!rp) {
+        let userRating = data.rp || 1000;
+        if (!data.rp) {
             try {
                 const userDoc = await User.findOne({ nickname: nickname });
                 if (userDoc) userRating = userDoc.rating;
