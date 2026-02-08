@@ -128,12 +128,13 @@ function getRoomList() {
     }));
 }
 
-function startGameSequence(roomId) {
+async function startGameSequence(roomId) {
     const room = rooms[roomId];
     if (!room) return;
 
     room.status = "PLAYING";
     
+    // 랜덤 곡 선정
     const randomSong = SONG_DB[Math.floor(Math.random() * SONG_DB.length)];
     const randomChart = randomSong.charts[Math.floor(Math.random() * randomSong.charts.length)];
     const diffKey = randomChart.replace(".json", ""); 
@@ -143,12 +144,40 @@ function startGameSequence(roomId) {
     // Delay: 3s(Intro) + 3s(Reveal) + 15s(Countdown) = 21s
     const startTime = Date.now() + 21000;
 
-    io.to(roomId).emit("game_start", {
+    // ★ [핵심] 플레이어들의 RP 정보 가져오기
+    // (메모리에 없으므로 DB에서 가져와야 함)
+    // room.players[0]과 [1]의 닉네임으로 DB 조회
+    let p1_RP = 1000;
+    let p2_RP = 1000;
+
+    try {
+        const p1_Data = await User.findOne({ nickname: room.players[0].nickname });
+        const p2_Data = await User.findOne({ nickname: room.players[1].nickname });
+        if (p1_Data) p1_RP = p1_Data.rating || 1000;
+        if (p2_Data) p2_RP = p2_Data.rating || 1000;
+    } catch (e) {
+        console.error("RP Fetch Error:", e);
+    }
+
+    // ★ [핵심] 각 플레이어에게 "상대방의 RP"를 담아서 개별 전송
+    // Player 1에게는 Player 2의 RP를 보냄
+    io.to(room.players[0].socketId).emit("game_start", {
         songFolder: randomSong.folder,
         songTitle: randomSong.title,
         songArtist: randomSong.artist,
         diffKey: diffKey,
-        startTime: startTime 
+        startTime: startTime,
+        opponentRP: p2_RP // P1의 상대는 P2
+    });
+
+    // Player 2에게는 Player 1의 RP를 보냄
+    io.to(room.players[1].socketId).emit("game_start", {
+        songFolder: randomSong.folder,
+        songTitle: randomSong.title,
+        songArtist: randomSong.artist,
+        diffKey: diffKey,
+        startTime: startTime,
+        opponentRP: p1_RP // P2의 상대는 P1
     });
 
     io.emit("update_room_list", getRoomList());
