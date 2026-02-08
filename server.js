@@ -199,6 +199,32 @@ io.on("connection", (socket) => {
         console.log(`🏠 Created: ${data.title} (${roomId})`);
     });
 
+    // [★ 추가] 게임 종료 신호 처리 & 방 삭제 로직
+    socket.on("game_over", (data) => {
+        const { roomId } = data;
+        const room = rooms[roomId];
+        if (!room) return;
+
+        // 해당 플레이어 '완료' 상태로 변경
+        const player = room.players.find(p => p.socketId === socket.id);
+        if (player) {
+            player.finished = true;
+            console.log(`🏁 Player Finished: ${player.nickname} in ${roomId}`);
+        }
+
+        // 방에 있는 '모든' 플레이어가 finished 상태인지 확인
+        // (주의: 플레이어가 나갔을 수도 있으니 현재 남아있는 사람 기준으로 체크)
+        const allFinished = room.players.every(p => p.finished === true);
+
+        if (allFinished) {
+            delete rooms[roomId]; // 방 폭파 💥
+            console.log(`💥 All players finished. Room Destroyed: ${roomId}`);
+            
+            // 로비에 있는 사람들에게 방 목록 갱신 요청
+            io.emit("update_room_list", getRoomList());
+        }
+    });
+
     // [Lobby] Join Room (★ RECONNECTION LOGIC ADDED)
     socket.on("join_room", (data) => {
         const { roomId, nickname } = data;
