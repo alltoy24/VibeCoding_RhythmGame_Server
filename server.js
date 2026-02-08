@@ -201,9 +201,14 @@ io.on("connection", (socket) => {
 
     // [★ 추가] 게임 종료 신호 처리 & 방 삭제 로직
     socket.on("game_over", (data) => {
-        const { roomId } = data;
+        const { roomId, finishType } = data; // finishType 받기
         const room = rooms[roomId];
         if (!room) return;
+
+        // ★ 상대방에게 "쟤 끝났대! (그리고 풀콤보래!)" 라고 알려줌
+        socket.to(roomId).emit("opponent_finished", { 
+            finishType: finishType 
+        });
 
         // 해당 플레이어 '완료' 상태로 변경
         const player = room.players.find(p => p.socketId === socket.id);
