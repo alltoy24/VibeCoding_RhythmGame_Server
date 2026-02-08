@@ -51,7 +51,12 @@ const userSchema = new mongoose.Schema({
   userId: String,
   nickname: String,
   level: Number,
-  xp: Number
+  xp: Number,
+  // ★ 추가
+  rating: { type: Number, default: 1000 }, // 기본 점수 1000점
+  tier: { type: String, default: "Bronze" },
+  matchCount: { type: Number, default: 0 },
+  winCount: { type: Number, default: 0 }
 });
 const User = mongoose.model("User", userSchema);
 
