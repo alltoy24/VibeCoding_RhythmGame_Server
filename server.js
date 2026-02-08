@@ -7,33 +7,36 @@ const rateLimit = require("express-rate-limit"); // Anti-spam
 const http = require("http");
 const { Server } = require("socket.io");
 
+// ==========================================
+// ★ 0. Server Initialization
+// ==========================================
 const app = express();
-
-// Wrap Express app with HTTP server (Required for Socket.io)
 const server = http.createServer(app);
 
-// Socket.io Setup (CORS Allowed)
+// Socket.io Setup (Optimized for Stability)
 const io = new Server(server, {
     cors: {
-        origin: "*", // In production, restrict this to your client's domain
+        origin: "*", // Production에서는 실제 도메인으로 변경 권장
         methods: ["GET", "POST"]
-    }
+    },
+    pingTimeout: 60000, // 연결 유지 시간 늘림 (네트워크 불안정 대비)
+    pingInterval: 25000
 });
 
-// Trust Proxy Setting (Required for deployment platforms like Cloudtype/Heroku)
+// Trust Proxy (For Heroku/Cloudtype)
 app.set('trust proxy', 1);
 
 // ==========================================
 // ★ 1. Security Middleware Configuration
 // ==========================================
 app.use(helmet()); 
-app.use(express.json({ limit: '10kb' })); // Limit request body size to prevent DDOS
+app.use(express.json({ limit: '10kb' })); // Body limit
 app.use(cors());
 
-// [Anti-Spam] Limit to 100 requests per 15 minutes per IP
+// [Anti-Spam] API Rate Limiter
 const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000, 
-    max: 100, 
+    windowMs: 15 * 60 * 1000, // 15분
+    max: 100, // IP당 100회 제한
     message: { error: "Too many requests. Please try again later." }
 });
 app.use("/api/", limiter);
@@ -41,7 +44,7 @@ app.use("/api/", limiter);
 // ==========================================
 // ★ 2. MongoDB Connection
 // ==========================================
-mongoose.connect(process.env.MONGO_URI)
+mongoose.connect(process.env.MONGO_URI || "")
   .then(() => console.log("✅ MongoDB Connected Successfully! (SECURE MODE)"))
   .catch(err => console.error("🔥 DB Connection Failed:", err));
 
@@ -55,7 +58,7 @@ const scoreSchema = new mongoose.Schema({
   diff: String,
   score: Number,
   level: Number,
-  timestamp: { type: Date, default: Date.now } // Automatically save timestamp
+  timestamp: { type: Date, default: Date.now }
 });
 scoreSchema.index({ userId: 1, song: 1, diff: 1 }, { unique: true });
 const Score = mongoose.model("Score", scoreSchema);
@@ -65,8 +68,7 @@ const userSchema = new mongoose.Schema({
   nickname: String,
   level: Number,
   xp: Number,
-  // ★ Additional User Stats
-  rating: { type: Number, default: 1000 }, // Default rating
+  rating: { type: Number, default: 1000 },
   tier: { type: String, default: "Bronze" },
   matchCount: { type: Number, default: 0 },
   winCount: { type: Number, default: 0 }
@@ -74,101 +76,72 @@ const userSchema = new mongoose.Schema({
 const User = mongoose.model("User", userSchema);
 
 // ==========================================
-// ★ 4. Security Verification Function (Core!)
+// ★ 4. Security Verification (Core Logic)
 // ==========================================
 const verifySignature = (req, res, next) => {
-    // 1. Receive data from client
     const { userId, score, maxCombo, signature, playTime } = req.body;
     
-    // 2. Check for missing required data
     if (!userId || score === undefined || maxCombo === undefined || !signature) {
-        console.log("❌ Missing Data:", { userId, score, maxCombo, signature });
         return res.status(400).json({ error: "Invalid Request (Missing Data)" });
     }
 
-    // 3. Playtime Validation (Simple Anti-Cheat)
+    // Anti-Cheat: Playtime check
     if (playTime && playTime < 10000) {
-        console.warn(`🚨 [HACK] PlayTime too short: ${playTime}ms (${userId})`);
+        console.warn(`🚨 [HACK] Short PlayTime: ${playTime}ms (${userId})`);
         return res.status(403).json({ error: "Abnormal play detected" });
     }
 
-    // 4. Signature Verification Logic
+    // Signature Verification
     const serverSecret = process.env.SECRET_SALT || "WebBeat_Secure_Key_2026_Ver42"; 
     const rawString = `${userId}_${score}_${maxCombo}_${serverSecret}`;
     const expectedSignature = Buffer.from(rawString).toString('base64');
 
-    // 5. Comparison
     if (signature !== expectedSignature) {
-        console.log("---------------------------------------");
         console.log("🚨 [Signature Mismatch] Hack Suspected!");
         return res.status(403).json({ error: "Data Tampering Detected" });
     }
 
-    // Pass!
     next();
 };
 
 // ==========================================
-// ★ 5. [Multiplayer Logic] Fully Implemented
+// ★ 5. Multiplayer Logic (Refactored)
 // ==========================================
 
-// In-memory storage for rooms
 let rooms = {}; 
 let roomSeq = 1; 
 
-// Song Database (Must match folder names in song_list.json)
+// Song Database
 const SONG_DB = [
-    { 
-        folder: "NewEra", 
-        title: "New Era", 
-        artist: "Alltoy24", 
-        charts: ["normal_4.json", "hard_8.json", "troll_11.json"] 
-    },
-    { 
-        folder: "세계수의정원", 
-        title: "Garden of Yggdrasil", 
-        artist: "Alltoy24", 
-        charts: ["normal_1.json", "hard_6.json", "troll_13.json"] 
-    },
-    { 
-        folder: "Test", 
-        title: "Test Map", 
-        artist: "Alltoy24", 
-        charts: ["normal_2.json"] 
-    }
+    { folder: "NewEra", title: "New Era", artist: "Alltoy24", charts: ["normal_4.json", "hard_8.json", "troll_11.json"] },
+    { folder: "세계수의정원", title: "Garden of Yggdrasil", artist: "Alltoy24", charts: ["normal_1.json", "hard_6.json", "troll_13.json"] },
+    { folder: "Test", title: "Test Map", artist: "Alltoy24", charts: ["normal_2.json"] }
 ];
 
-// Helper: Convert room object to array for client
 function getRoomList() {
     return Object.values(rooms).map(r => ({
         id: r.id,
         title: r.title,
         host: r.hostName,
         status: r.status,
-        pCount: r.players.length
+        pCount: r.players.filter(p => p.connected).length // 연결된 사람 수만 표시
     }));
 }
 
-// Helper: Game Start Sequence (Called when room is full)
 function startGameSequence(roomId) {
     const room = rooms[roomId];
     if (!room) return;
 
     room.status = "PLAYING";
     
-    // 1. Select Random Song
     const randomSong = SONG_DB[Math.floor(Math.random() * SONG_DB.length)];
-    
-    // 2. Select Random Difficulty
     const randomChart = randomSong.charts[Math.floor(Math.random() * randomSong.charts.length)];
-    const diffKey = randomChart.replace(".json", ""); // e.g., "hard_8"
+    const diffKey = randomChart.replace(".json", ""); 
 
-    console.log(`🚀 Start Game: Room ${roomId} | Song: ${randomSong.title} | Diff: ${diffKey}`);
+    console.log(`🚀 Game Start: Room ${roomId} | ${randomSong.title} [${diffKey}]`);
 
-    // 3. Send Game Start Signal to Room
-    // Delay: 3s (Effect) + 3s (Info Reveal) + 15s (Countdown) = 21s
-    const startDelay = 21000;
-    const startTime = Date.now() + startDelay;
+    // Delay: 3s(Intro) + 3s(Reveal) + 15s(Countdown) = 21s
+    const startTime = Date.now() + 21000;
 
     io.to(roomId).emit("game_start", {
         songFolder: randomSong.folder,
@@ -178,46 +151,55 @@ function startGameSequence(roomId) {
         startTime: startTime 
     });
 
-    // 4. Update Lobby List (Status changed to PLAYING)
     io.emit("update_room_list", getRoomList());
 }
 
-io.on("connection", (socket) => {
-    console.log(`🔌 Client Connected: ${socket.id}`);
+// Garbage Collector: 30초마다 빈 방이나 오랫동안 유령 상태인 방 정리
+setInterval(() => {
+    for (const rId in rooms) {
+        const room = rooms[rId];
+        // 플레이어가 없거나 모든 플레이어가 연결이 끊긴 지 오래된 경우
+        const activePlayers = room.players.filter(p => p.connected);
+        if (activePlayers.length === 0) {
+            delete rooms[rId];
+            console.log(`🧹 Garbage Collector: Deleted Empty Room ${rId}`);
+            io.emit("update_room_list", getRoomList());
+        }
+    }
+}, 30000);
 
-    // --- 1. Request Room List ---
+io.on("connection", (socket) => {
+    // console.log(`🔌 Connected: ${socket.id}`);
+
+    // [Lobby] Request List
     socket.on("request_room_list", () => {
         socket.emit("update_room_list", getRoomList());
     });
 
-    // --- 2. Create Room ---
+    // [Lobby] Create Room
     socket.on("create_room", (data) => {
         const roomId = `room_${roomSeq++}`;
-        
         rooms[roomId] = {
             id: roomId,
             title: data.title,
             hostId: socket.id,
             hostName: data.nickname,
-            players: [{ socketId: socket.id, nickname: data.nickname, ready: true }],
+            players: [{ 
+                socketId: socket.id, 
+                nickname: data.nickname, 
+                ready: true, 
+                connected: true 
+            }],
             status: "WAITING"
         };
 
         socket.join(roomId);
-        
-        // Notify creator
-        socket.emit("room_joined", { 
-            roomId, 
-            roomData: rooms[roomId], 
-            isHost: true 
-        });
-
-        // Broadcast to everyone
+        socket.emit("room_joined", { roomId, roomData: rooms[roomId], isHost: true });
         io.emit("update_room_list", getRoomList());
-        console.log(`🏠 Room Created: ${data.title} (${roomId})`);
+        console.log(`🏠 Created: ${data.title} (${roomId})`);
     });
 
-    // --- 3. Join Room ---
+    // [Lobby] Join Room (★ RECONNECTION LOGIC ADDED)
     socket.on("join_room", (data) => {
         const { roomId, nickname } = data;
         const room = rooms[roomId];
@@ -226,93 +208,125 @@ io.on("connection", (socket) => {
             socket.emit("error_msg", "Room does not exist.");
             return;
         }
+
+        // 1. 재접속 확인 (닉네임 일치 & 게임 중)
+        const existingPlayer = room.players.find(p => p.nickname === nickname);
+        
+        if (existingPlayer) {
+            // 게임 중이거나, 잠시 튕겼다가 돌아온 경우
+            console.log(`🔄 Reconnect: ${nickname} -> ${roomId}`);
+            
+            // 소켓 ID 갱신 및 상태 복구
+            existingPlayer.socketId = socket.id;
+            existingPlayer.connected = true;
+            socket.join(roomId);
+
+            // 재접속한 유저에게 현재 방 정보 전송
+            socket.emit("room_joined", { 
+                roomId, 
+                roomData: room, 
+                isHost: (room.hostName === nickname) 
+            });
+            
+            // 방에 게임이 진행 중이라면 상대방에게 "상대 재접속함" 알림 가능 (선택 사항)
+            return; 
+        }
+
+        // 2. 신규 입장 제한
         if (room.players.length >= 2) {
             socket.emit("error_msg", "Room is full.");
             return;
         }
 
-        // Add player
-        room.players.push({ socketId: socket.id, nickname: nickname, ready: true });
+        // 3. 신규 입장 처리
+        room.players.push({ 
+            socketId: socket.id, 
+            nickname: nickname, 
+            ready: true, 
+            connected: true 
+        });
         socket.join(roomId);
 
-        // Notify joiner
+        // Notify Joiner
         socket.emit("room_joined", { roomId, roomData: room, isHost: false });
-        
-        // Notify existing players (Host)
+        // Notify Host
         socket.to(roomId).emit("player_entered", { nickname: nickname });
 
-        // Broadcast updated list (pCount changed)
         io.emit("update_room_list", getRoomList());
-        console.log(`🏃 Room Joined: ${nickname} -> ${roomId}`);
+        console.log(`🏃 Joined: ${nickname} -> ${roomId}`);
 
-        // ★ Check for Auto-Start Condition
+        // Auto Start
         if (room.players.length === 2) {
             startGameSequence(roomId);
         }
     });
 
-    // --- 4. Quick Match ---
+    // [Lobby] Quick Match
     socket.on("quick_match", (data) => {
-        // Find a room that is WAITING and has 1 player
+        // 대기 중이고 1명만 있는 방 찾기
         const availableRoom = Object.values(rooms).find(r => r.status === "WAITING" && r.players.length < 2);
 
         if (availableRoom) {
-            // Found a room! Tell client to join this ID.
-            console.log(`⚔️ QuickMatch Found: ${availableRoom.id}`);
             socket.emit("quick_match_found", availableRoom.id);
         } else {
-            // No room found. Create a new one.
+            // 방이 없으면 생성
             const roomId = `room_${roomSeq++}`;
             rooms[roomId] = {
                 id: roomId,
                 title: `${data.nickname}'s Match`,
                 hostId: socket.id,
                 hostName: data.nickname,
-                players: [{ socketId: socket.id, nickname: data.nickname, ready: true }],
+                players: [{ 
+                    socketId: socket.id, 
+                    nickname: data.nickname, 
+                    ready: true, 
+                    connected: true 
+                }],
                 status: "WAITING"
             };
             socket.join(roomId);
-            
-            // Notify creator
             socket.emit("room_joined", { roomId, roomData: rooms[roomId], isHost: true });
-            
-            // Broadcast new room
             io.emit("update_room_list", getRoomList());
-            console.log(`⚔️ QuickMatch Created New Room: ${roomId}`);
         }
     });
 
+    // [Game] Score Sync
     socket.on("send_score", (data) => {
-        // 내 점수를 같은 방의 다른 사람(상대방)에게 전달
+        // data: { roomId, score, combo, lane }
         socket.to(data.roomId).emit("opponent_update", data);
     });
 
-    // --- 5. Disconnect / Leave Room Logic ---
+    // [Game] Leave / Disconnect Handler
     const handleLeave = () => {
-        // Iterate through all rooms to find the user
         for (const rId in rooms) {
             const room = rooms[rId];
-            const idx = room.players.findIndex(p => p.socketId === socket.id);
+            const player = room.players.find(p => p.socketId === socket.id);
             
-            if (idx !== -1) {
-                // Remove player
-                room.players.splice(idx, 1);
+            if (player) {
+                // ★ 핵심: 게임 중(PLAYING)이면 방을 폭파하지 않고 'connected: false'로만 표시
+                // 페이지 이동(새로고침) 시 재접속을 위해 데이터를 유지함.
+                if (room.status === "PLAYING") {
+                    console.log(`⚠️ Disconnect during game (Pending Reconnect): ${player.nickname}`);
+                    player.connected = false; 
+                    // 1분 뒤에도 안 돌아오면 그때 진짜 삭제 로직은 Garbage Collector가 담당
+                    return; 
+                }
+
+                // 대기실(WAITING) 상태라면 즉시 퇴장 처리
+                room.players = room.players.filter(p => p.socketId !== socket.id);
                 socket.leave(rId);
 
                 if (room.players.length === 0) {
-                    // Room empty -> Delete room
                     delete rooms[rId];
                     console.log(`🗑️ Room Deleted: ${rId}`);
                 } else {
-                    // Room not empty -> Reset status to WAITING and notify remaining player
                     room.status = "WAITING";
-                    io.to(rId).emit("opponent_left");
-                    console.log(`👋 User Left Room: ${rId}`);
+                    io.to(rId).emit("opponent_left"); // 상대 나감 알림
+                    console.log(`👋 Left: ${player.nickname}`);
                 }
                 
-                // Update lobby list
                 io.emit("update_room_list", getRoomList());
-                break; // User found and processed, stop loop
+                break;
             }
         }
     };
@@ -321,92 +335,62 @@ io.on("connection", (socket) => {
     socket.on("disconnect", handleLeave);
 });
 
-
 // ==========================================
-// ★ 6. API Endpoints (Preserved)
+// ★ 6. API Endpoints
 // ==========================================
 
-// [API 1] Save Score (With Verification)
+// [API 1] Save Score
 app.post("/api/score", verifySignature, async (req, res) => {
   const { userId, userName, song, diff, score, level } = req.body;
-
   try {
     const cleanScore = Number(score);
-    const cleanLevel = Number(level);
-
-    if (isNaN(cleanScore) || cleanScore > 1000000) { 
-        return res.status(400).json({ error: "Invalid Score" });
-    }
+    if (isNaN(cleanScore) || cleanScore > 1000000) return res.status(400).json({ error: "Invalid Score" });
 
     await Score.updateOne(
       { userId, song, diff }, 
-      { 
-        $max: { score: cleanScore }, 
-        $set: { userName: userName, level: cleanLevel || 1 } 
-      },
+      { $max: { score: cleanScore }, $set: { userName: userName, level: Number(level) || 1 } },
       { upsert: true }
     );
-    console.log(`[SCORE] ${userName} - ${song}: ${cleanScore} (Verified)`);
+    console.log(`[SCORE] ${userName}: ${cleanScore}`);
     res.json({ success: true });
   } catch (e) {
     if (e.code === 11000) return res.json({ success: true });
-    console.error(e);
     res.status(500).json({ error: "DB Error" });
   }
 });
 
-// [API 2] Get Ranking
+// [API 2] Ranking
 app.get("/api/ranking/:song/:diff", async (req, res) => {
-  const { song, diff } = req.params;
   try {
-    const leaderboard = await Score.find({ song, diff })
-      .sort({ score: -1 })
-      .limit(50)
-      .select('userName score level -_id'); 
+    const leaderboard = await Score.find({ song: req.params.song, diff: req.params.diff })
+      .sort({ score: -1 }).limit(50).select('userName score level -_id'); 
     res.json(leaderboard);
-  } catch (e) {
-    res.status(500).json([]);
-  }
+  } catch (e) { res.status(500).json([]); }
 });
 
-// [API 3] Get User Info
+// [API 3] User Info
 app.get("/api/user/:userId", async (req, res) => {
-  const { userId } = req.params;
   try {
-    let user = await User.findOne({ userId });
+    let user = await User.findOne({ userId: req.params.userId });
     if (!user) user = { level: 1, xp: 0, nickname: null };
     res.json(user);
-  } catch (e) {
-    res.status(500).json({ level: 1, xp: 0, nickname: null });
-  }
+  } catch (e) { res.status(500).json({ level: 1, xp: 0, nickname: null }); }
 });
 
-// [API 4] Update User Info
+// [API 4] Update User
 app.post("/api/user/update", async (req, res) => {
   const { userId, level, xp, nickname } = req.body;
-  
   try {
     const updateData = {};
     if (level !== undefined) updateData.level = Number(level);
     if (xp !== undefined) updateData.xp = Number(xp);
     if (nickname !== undefined) updateData.nickname = String(nickname).substring(0, 12); 
 
-    await User.findOneAndUpdate(
-      { userId },
-      { $set: updateData },
-      { upsert: true, new: true }
-    );
-
-    if (nickname) {
-        await Score.updateMany(
-            { userId: userId },
-            { $set: { userName: nickname } }
-        );
-    }
+    await User.findOneAndUpdate({ userId }, { $set: updateData }, { upsert: true, new: true });
+    if (nickname) await Score.updateMany({ userId }, { $set: { userName: nickname } });
+    
     res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: "DB Error" });
-  }
+  } catch (e) { res.status(500).json({ error: "DB Error" }); }
 });
 
 // ==========================================
