@@ -263,33 +263,28 @@ io.on("connection", (socket) => {
         console.log(`🏠 Created: ${data.title} (${roomId}) - Host RP: ${userRating}`);
     });
 
-    // [★ 추가] 게임 종료 신호 처리 & 방 삭제 로직
     socket.on("game_over", (data) => {
-        const { roomId, finishType } = data; // finishType 받기
+        const { roomId, finishType } = data;
         const room = rooms[roomId];
         if (!room) return;
 
-        // ★ 상대방에게 "쟤 끝났대! (그리고 풀콤보래!)" 라고 알려줌
-        socket.to(roomId).emit("opponent_finished", { 
-            finishType: finishType 
-        });
+        // 상대방에게 결과 알림
+        socket.to(roomId).emit("opponent_finished", { finishType });
 
-        // 해당 플레이어 '완료' 상태로 변경
+        // 내 상태 '완료'로 변경
         const player = room.players.find(p => p.socketId === socket.id);
         if (player) {
             player.finished = true;
-            console.log(`🏁 Player Finished: ${player.nickname} in ${roomId}`);
+            console.log(`🏁 Finished: ${player.nickname}`);
         }
 
-        // 방에 있는 '모든' 플레이어가 finished 상태인지 확인
-        // (주의: 플레이어가 나갔을 수도 있으니 현재 남아있는 사람 기준으로 체크)
-        const allFinished = room.players.every(p => p.finished === true);
+        // ★ [핵심] 방 폭파 조건 수정
+        // 조건: (게임 끝난 사람) OR (탈주해서 연결 끊긴 사람)
+        const allFinished = room.players.every(p => p.finished === true || p.connected === false);
 
         if (allFinished) {
-            delete rooms[roomId]; // 방 폭파 💥
-            console.log(`💥 All players finished. Room Destroyed: ${roomId}`);
-            
-            // 로비에 있는 사람들에게 방 목록 갱신 요청
+            delete rooms[roomId]; // 방 삭제 💥
+            console.log(`💥 Room Closed (All Done): ${roomId}`);
             io.emit("update_room_list", getRoomList());
         }
     });
@@ -406,33 +401,38 @@ io.on("connection", (socket) => {
         socket.to(data.roomId).emit("opponent_update", data);
     });
 
-    // [Game] Leave / Disconnect Handler
     const handleLeave = () => {
         for (const rId in rooms) {
             const room = rooms[rId];
             const player = room.players.find(p => p.socketId === socket.id);
             
             if (player) {
-                // ★ 핵심: 게임 중(PLAYING)이면 방을 폭파하지 않고 'connected: false'로만 표시
-                // 페이지 이동(새로고침) 시 재접속을 위해 데이터를 유지함.
                 if (room.status === "PLAYING") {
-                    console.log(`⚠️ Disconnect during game (Pending Reconnect): ${player.nickname}`);
+                    // 게임 중 탈주!
+                    console.log(`🏃‍♂️ Player Left Game: ${player.nickname}`);
                     player.connected = false; 
-                    // 1분 뒤에도 안 돌아오면 그때 진짜 삭제 로직은 Garbage Collector가 담당
-                    return; 
-                }
+                    player.finished = true; // ★ [핵심] 강제로 '끝남' 처리 (그래야 방이 죽음)
+                    
+                    io.to(rId).emit("opponent_left"); // 상대에게 알림
 
-                // 대기실(WAITING) 상태라면 즉시 퇴장 처리
-                room.players = room.players.filter(p => p.socketId !== socket.id);
-                socket.leave(rId);
+                    // 혹시 남은 사람이 이미 다 끝난 상태였다면? (내가 마지막 탈주자라면?) -> 방 폭파
+                    const allDone = room.players.every(p => p.finished === true || p.connected === false);
+                    if (allDone) {
+                        delete rooms[rId];
+                        console.log(`💥 Room Closed (Last Leaver): ${rId}`);
+                    }
 
-                if (room.players.length === 0) {
-                    delete rooms[rId];
-                    console.log(`🗑️ Room Deleted: ${rId}`);
                 } else {
-                    room.status = "WAITING";
-                    io.to(rId).emit("opponent_left"); // 상대 나감 알림
-                    console.log(`👋 Left: ${player.nickname}`);
+                    // 대기 중 탈주 -> 그냥 삭제
+                    room.players = room.players.filter(p => p.socketId !== socket.id);
+                    socket.leave(rId);
+                    
+                    if (room.players.length === 0) {
+                        delete rooms[rId];
+                        console.log(`🗑️ Empty Room Deleted: ${rId}`);
+                    } else {
+                        io.to(rId).emit("opponent_left");
+                    }
                 }
                 
                 io.emit("update_room_list", getRoomList());
