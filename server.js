@@ -159,6 +159,12 @@ async function startGameSequence(roomId) {
     if (!room) return;
 
     room.status = "PLAYING";
+    room.isTransitioning = true; // ★ [추가] "지금 페이지 이동 중임" 표시
+
+    // ★ [추가] 15초 뒤에는 이동이 끝났을 테니 플래그 해제
+    setTimeout(() => { 
+        if(rooms[roomId]) rooms[roomId].isTransitioning = false; 
+    }, 15000);
     
     // 랜덤 곡 선정
     const randomSong = SONG_DB[Math.floor(Math.random() * SONG_DB.length)];
@@ -401,6 +407,7 @@ io.on("connection", (socket) => {
         socket.to(data.roomId).emit("opponent_update", data);
     });
 
+    // [연결 해제 핸들러]
     const handleLeave = () => {
         for (const rId in rooms) {
             const room = rooms[rId];
@@ -408,34 +415,28 @@ io.on("connection", (socket) => {
             
             if (player) {
                 if (room.status === "PLAYING") {
-                    // 게임 중 탈주!
-                    console.log(`🏃‍♂️ Player Left Game: ${player.nickname}`);
-                    player.connected = false; 
-                    player.finished = true; // ★ [핵심] 강제로 '끝남' 처리 (그래야 방이 죽음)
-                    
-                    io.to(rId).emit("opponent_left"); // 상대에게 알림
+                    // ★ [수정] 페이지 이동 중(Transitioning)이라면 '상대 나감' 알림을 보내지 않음!
+                    if (room.isTransitioning) {
+                        console.log(`⚠️ Page Transition Disconnect (Ignored): ${player.nickname}`);
+                        player.connected = false; // 연결 상태만 false로 하고 방은 유지
+                    } else {
+                        // 실제 게임 도중 탈주한 경우
+                        player.connected = false; 
+                        player.finished = true; 
+                        io.to(rId).emit("opponent_left"); 
 
-                    // 혹시 남은 사람이 이미 다 끝난 상태였다면? (내가 마지막 탈주자라면?) -> 방 폭파
-                    const allDone = room.players.every(p => p.finished === true || p.connected === false);
-                    if (allDone) {
-                        delete rooms[rId];
-                        console.log(`💥 Room Closed (Last Leaver): ${rId}`);
+                        const allDone = room.players.every(p => p.finished === true || p.connected === false);
+                        if (allDone) delete rooms[rId];
                     }
-
                 } else {
-                    // 대기 중 탈주 -> 그냥 삭제
+                    // 대기 중 탈주 (기존 코드 그대로)
                     room.players = room.players.filter(p => p.socketId !== socket.id);
                     socket.leave(rId);
+                    if (room.players.length === 0) delete rooms[rId];
+                    else io.to(rId).emit("opponent_left");
                     
-                    if (room.players.length === 0) {
-                        delete rooms[rId];
-                        console.log(`🗑️ Empty Room Deleted: ${rId}`);
-                    } else {
-                        io.to(rId).emit("opponent_left");
-                    }
+                    io.emit("update_room_list", getRoomList());
                 }
-                
-                io.emit("update_room_list", getRoomList());
                 break;
             }
         }
