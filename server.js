@@ -282,6 +282,12 @@ io.on("connection", (socket) => {
         }
     });
 
+    socket.on("send_score", (data) => {
+        // data: { roomId, score, combo, lane }
+        // 같은 방에 있는 다른 사람(상대방)에게만 전송
+        socket.to(data.roomId).emit("opponent_update", data);
+    });
+
     // --- 5. Disconnect / Leave Room Logic ---
     const handleLeave = () => {
         // Iterate through all rooms to find the user
