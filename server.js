@@ -4,8 +4,22 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 const helmet = require("helmet"); // 보안 헤더 설정
 const rateLimit = require("express-rate-limit"); // 도배 방지
+// ★ [추가] 웹소켓을 위한 모듈 로드
+const http = require("http");
+const { Server } = require("socket.io");
 
 const app = express();
+
+// ★ [추가] Express 앱을 HTTP 서버로 감싸기 (Socket.io 연동 필수)
+const server = http.createServer(app);
+
+// ★ [추가] Socket.io 설정 (CORS 허용)
+const io = new Server(server, {
+    cors: {
+        origin: "*", // 실제 배포 시엔 클라이언트 주소로 제한하는 것이 보안상 좋습니다.
+        methods: ["GET", "POST"]
+    }
+});
 
 // ★ [필수] 프록시 신뢰 설정 (Cloudtype/Heroku 등 배포 시 필수)
 app.set('trust proxy', 1);
@@ -52,7 +66,7 @@ const userSchema = new mongoose.Schema({
   nickname: String,
   level: Number,
   xp: Number,
-  // ★ 추가
+  // ★ 추가된 필드 유지
   rating: { type: Number, default: 1000 }, // 기본 점수 1000점
   tier: { type: String, default: "Bronze" },
   matchCount: { type: Number, default: 0 },
@@ -79,25 +93,15 @@ const verifySignature = (req, res, next) => {
         return res.status(403).json({ error: "비정상적인 플레이 감지됨" });
     }
 
-    // 4. ★★★ [핵심 수정] 서명 검증 로직 일치시키기 ★★★
-    // 클라이언트의 로직: `${userId}_${score}_${maxCombo}_${SECRET_SALT}`
-    // 서버도 똑같이 만들어야 함!
-    const serverSecret = process.env.SECRET_SALT || "WebBeat_Secure_Key_2026_Ver42"; // 클라이언트와 키가 같아야 함!
-    
-    // 순서: 아이디_점수_콤보_비밀키 (언더바 필수)
+    // 4. 서명 검증 로직
+    const serverSecret = process.env.SECRET_SALT || "WebBeat_Secure_Key_2026_Ver42"; 
     const rawString = `${userId}_${score}_${maxCombo}_${serverSecret}`;
-    
-    // Base64 인코딩 (Node.js 방식)
     const expectedSignature = Buffer.from(rawString).toString('base64');
 
-    // 5. 비교 (로그 찍어서 확인)
+    // 5. 비교
     if (signature !== expectedSignature) {
         console.log("---------------------------------------");
         console.log("🚨 [서명 불일치] 해킹 의심!");
-        console.log("📥 클라이언트가 보낸 것:", signature);
-        console.log("💻 서버가 계산한 것:    ", expectedSignature);
-        console.log("🔑 서버 원본 문자열:    ", rawString); // 이게 클라이언트랑 같은지 확인 필요
-        console.log("---------------------------------------");
         return res.status(403).json({ error: "데이터 변조가 감지되었습니다." });
     }
 
@@ -106,19 +110,69 @@ const verifySignature = (req, res, next) => {
 };
 
 // ==========================================
-// ★ 5. API 기능들
+// ★ 5. [신규] 멀티플레이 소켓 로직
+// ==========================================
+let waitingQueue = []; // 매칭 대기열
+
+io.on("connection", (socket) => {
+    console.log(`🔌 [Socket] 유저 접속: ${socket.id}`);
+
+    // [매칭 요청]
+    socket.on("join_match", (userData) => {
+        // 이미 대기열에 있는지 확인
+        const existing = waitingQueue.find(u => u.socketId === socket.id);
+        if (existing) return;
+
+        console.log(`⚔️ 매칭 대기: ${userData.nickname} (${socket.id})`);
+        waitingQueue.push({ socketId: socket.id, ...userData });
+
+        // 2명 이상이면 매칭 성사
+        if (waitingQueue.length >= 2) {
+            const p1 = waitingQueue.shift();
+            const p2 = waitingQueue.shift();
+            const roomId = `room_${p1.socketId}_${p2.socketId}`;
+
+            io.to(p1.socketId).socketsJoin(roomId);
+            io.to(p2.socketId).socketsJoin(roomId);
+
+            const startTime = Date.now() + 4000; // 4초 뒤 시작
+
+            io.to(roomId).emit("match_found", {
+                roomId: roomId,
+                players: [p1, p2],
+                startTime: startTime
+            });
+            console.log(`✅ 매칭 성공! 방: ${roomId}`);
+        }
+    });
+
+    // [점수 동기화] 내 점수를 상대방에게 보냄
+    socket.on("send_score", (data) => {
+        // data: { roomId, score, combo, hp }
+        socket.to(data.roomId).emit("opponent_update", data);
+    });
+
+    // [접속 해제]
+    socket.on("disconnect", () => {
+        console.log(`❌ [Socket] 접속 해제: ${socket.id}`);
+        waitingQueue = waitingQueue.filter(u => u.socketId !== socket.id);
+    });
+});
+
+
+// ==========================================
+// ★ 6. API 기능들 (기존 유지)
 // ==========================================
 
-// [기능 1] 점수 저장 (보안 미들웨어 `verifySignature` 장착!)
+// [기능 1] 점수 저장
 app.post("/api/score", verifySignature, async (req, res) => {
   const { userId, userName, song, diff, score, level } = req.body;
 
   try {
-    // 몽고DB Injection 방지를 위한 타입 변환
     const cleanScore = Number(score);
     const cleanLevel = Number(level);
 
-    if (isNaN(cleanScore) || cleanScore > 1000000) { // 100만점 초과 방지
+    if (isNaN(cleanScore) || cleanScore > 1000000) { 
         return res.status(400).json({ error: "유효하지 않은 점수입니다." });
     }
 
@@ -146,7 +200,7 @@ app.get("/api/ranking/:song/:diff", async (req, res) => {
     const leaderboard = await Score.find({ song, diff })
       .sort({ score: -1 })
       .limit(50)
-      .select('userName score level -_id'); // 필요한 필드만 전송 (보안)
+      .select('userName score level -_id'); 
     res.json(leaderboard);
   } catch (e) {
     res.status(500).json([]);
@@ -173,7 +227,7 @@ app.post("/api/user/update", async (req, res) => {
     const updateData = {};
     if (level !== undefined) updateData.level = Number(level);
     if (xp !== undefined) updateData.xp = Number(xp);
-    if (nickname !== undefined) updateData.nickname = String(nickname).substring(0, 12); // 길이 제한
+    if (nickname !== undefined) updateData.nickname = String(nickname).substring(0, 12); 
 
     await User.findOneAndUpdate(
       { userId },
@@ -193,7 +247,10 @@ app.post("/api/user/update", async (req, res) => {
   }
 });
 
+// ==========================================
+// ★ 서버 시작 (app.listen -> server.listen 변경)
+// ==========================================
 const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(`🛡️ Secure Server running on port ${port}`);
+server.listen(port, () => {
+  console.log(`🛡️ Secure Server & Socket.io running on port ${port}`);
 });
