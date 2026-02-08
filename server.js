@@ -205,9 +205,17 @@ io.on("connection", (socket) => {
         socket.emit("update_room_list", getRoomList());
     });
 
-    // [Lobby] Create Room
-    socket.on("create_room", (data) => {
+    // [Lobby] Create Room (★ 수정: 방장 RP 조회 및 저장)
+    socket.on("create_room", async (data) => {
         const roomId = `room_${roomSeq++}`;
+        
+        let userRating = 1000;
+        try {
+            // 방장의 점수를 DB에서 가져옴
+            const userDoc = await User.findOne({ nickname: data.nickname });
+            if (userDoc) userRating = userDoc.rating;
+        } catch(e) { console.error(e); }
+
         rooms[roomId] = {
             id: roomId,
             title: data.title,
@@ -216,6 +224,7 @@ io.on("connection", (socket) => {
             players: [{ 
                 socketId: socket.id, 
                 nickname: data.nickname, 
+                rating: userRating, // ★ 방장의 RP 저장
                 ready: true, 
                 connected: true 
             }],
@@ -225,7 +234,7 @@ io.on("connection", (socket) => {
         socket.join(roomId);
         socket.emit("room_joined", { roomId, roomData: rooms[roomId], isHost: true });
         io.emit("update_room_list", getRoomList());
-        console.log(`🏠 Created: ${data.title} (${roomId})`);
+        console.log(`🏠 Created: ${data.title} (${roomId}) - Host RP: ${userRating}`);
     });
 
     // [★ 추가] 게임 종료 신호 처리 & 방 삭제 로직
@@ -259,8 +268,7 @@ io.on("connection", (socket) => {
         }
     });
 
-    // [Lobby] Join Room (★ RECONNECTION LOGIC ADDED)
-    socket.on("join_room", (data) => {
+    socket.on("join_room", async (data) => {
         const { roomId, nickname } = data;
         const room = rooms[roomId];
 
@@ -269,68 +277,77 @@ io.on("connection", (socket) => {
             return;
         }
 
-        // 1. 재접속 확인 (닉네임 일치 & 게임 중)
+        // 1. 재접속 확인 (게임 중 튕겼을 때)
         const existingPlayer = room.players.find(p => p.nickname === nickname);
-        
         if (existingPlayer) {
-            // 게임 중이거나, 잠시 튕겼다가 돌아온 경우
             console.log(`🔄 Reconnect: ${nickname} -> ${roomId}`);
-            
-            // 소켓 ID 갱신 및 상태 복구
             existingPlayer.socketId = socket.id;
             existingPlayer.connected = true;
             socket.join(roomId);
-
-            // 재접속한 유저에게 현재 방 정보 전송
-            socket.emit("room_joined", { 
-                roomId, 
-                roomData: room, 
-                isHost: (room.hostName === nickname) 
-            });
             
-            // 방에 게임이 진행 중이라면 상대방에게 "상대 재접속함" 알림 가능 (선택 사항)
-            return; 
+            socket.emit("room_joined", { 
+                roomId, roomData: room, isHost: (room.hostName === nickname) 
+            });
+            return;
         }
 
-        // 2. 신규 입장 제한
+        // 2. 인원 확인
         if (room.players.length >= 2) {
             socket.emit("error_msg", "Room is full.");
             return;
         }
 
-        // 3. 신규 입장 처리
+        // 3. ★ DB에서 참가자 RP 조회
+        let userRating = 1000;
+        try {
+            const userDoc = await User.findOne({ nickname: nickname });
+            if (userDoc) userRating = userDoc.rating;
+        } catch(e) { console.error(e); }
+
+        // 4. 참가 처리
         room.players.push({ 
             socketId: socket.id, 
             nickname: nickname, 
+            rating: userRating, // ★ 참가자 점수 저장
             ready: true, 
             connected: true 
         });
         socket.join(roomId);
 
-        // Notify Joiner
+        // 참가자 본인에게 전송
         socket.emit("room_joined", { roomId, roomData: room, isHost: false });
-        // Notify Host
-        socket.to(roomId).emit("player_entered", { nickname: nickname });
+        
+        // ★ 방장에게 "새 유저(점수 포함) 들어옴" 알림
+        socket.to(roomId).emit("player_entered", { 
+            nickname: nickname,
+            rating: userRating 
+        });
 
         io.emit("update_room_list", getRoomList());
-        console.log(`🏃 Joined: ${nickname} -> ${roomId}`);
+        console.log(`🏃 Joined: ${nickname} (${userRating} RP) -> ${roomId}`);
 
-        // Auto Start
+        // 2명 다 차면 게임 시작
         if (room.players.length === 2) {
             startGameSequence(roomId);
         }
     });
 
-    // [Lobby] Quick Match
-    socket.on("quick_match", (data) => {
+    socket.on("quick_match", async (data) => {
         // 대기 중이고 1명만 있는 방 찾기
         const availableRoom = Object.values(rooms).find(r => r.status === "WAITING" && r.players.length < 2);
 
         if (availableRoom) {
             socket.emit("quick_match_found", availableRoom.id);
         } else {
-            // 방이 없으면 생성
+            // 방이 없으면 생성 (여기도 RP 조회 추가)
             const roomId = `room_${roomSeq++}`;
+            
+            let userRating = 1000;
+            try {
+                const userDoc = await User.findOne({ nickname: data.nickname });
+                if (userDoc) userRating = userDoc.rating;
+            } catch(e) {}
+
             rooms[roomId] = {
                 id: roomId,
                 title: `${data.nickname}'s Match`,
@@ -339,6 +356,7 @@ io.on("connection", (socket) => {
                 players: [{ 
                     socketId: socket.id, 
                     nickname: data.nickname, 
+                    rating: userRating, // ★ RP 저장
                     ready: true, 
                     connected: true 
                 }],
