@@ -141,6 +141,12 @@ const SONG_DB = [
     "title": "Break Glass Daydream",
     "artist": "Alltoy24",
     "charts": ["troll_15.json"]
+  },
+  {
+    "folder": "Cataclysm",
+    "title": "Cataclysm",
+    "artist": "Alltoy24",
+    "charts": ["troll_18.json"]
   }
 ]
 
