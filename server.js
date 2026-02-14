@@ -147,6 +147,18 @@ const SONG_DB = [
     "title": "Cataclysm",
     "artist": "Alltoy24",
     "charts": ["troll_18.json"]
+  },
+  {
+    "folder": "Checkpoint1",
+    "title": "Checkpoint:1",
+    "artist": "Alltoy24",
+    "charts": ["hard_6.json"]
+  },
+  {
+    "folder": "PuzzleVIP",
+    "title": "Puzzle VIP",
+    "artist": "RetroVision",
+    "charts": ["troll_15.json"]
   }
 ]
 
