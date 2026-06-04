@@ -159,6 +159,12 @@ const SONG_DB = [
     "title": "Puzzle VIP",
     "artist": "RetroVision",
     "charts": ["troll_15.json"]
+  },
+  {
+    "folder": "SATELLITE",
+    "title": "SATELLITE",
+    "artist": "NOMA",
+    "charts": ["hard_10.json"]
   }
 ]
 
