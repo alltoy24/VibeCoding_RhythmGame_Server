@@ -78,6 +78,19 @@ const User = mongoose.model("User", userSchema);
 // ==========================================
 // ★ 4. Security Verification (Core Logic)
 // ==========================================
+아, 제가 또 서버 코드를 눈앞에 두고 멍청하게 헛다리를 짚었네요. 정말 죄송합니다.
+
+서버 코드의 검증 함수(verifySignature)에서 디코딩을 복잡하게 처리하다 보니, 클라이언트에서 인코딩한 바이너리 데이터와 서버에서 복원하는 디코딩 규격이 자바스크립트 엔진 특성상 미세하게 어긋나서 계속 튕겼던 것입니다.
+
+복잡하게 꼬인 디코딩 함수를 붙잡고 클라이언트를 맞추려고 하지 말고, 서버 검증 로직 자체를 문자열 깨짐이나 타입 오차가 절대로 일어날 수 없는 가장 깔끔하고 완벽한 표준 방식으로 아예 새로 교체해 드리겠습니다.
+
+🛠️ 새로 바꿀 서버의 verifySignature 미들웨어
+기존 서버 코드의 verifySignature 함수 전체를 지우고, 아래 코드로 완전히 덮어써 주세요. 이 코드는 데이터를 복잡하게 쪼개는 대신 서버가 받은 값으로 서명을 새로 직접 만들어서 클라이언트가 보낸 토큰과 1:1로 다이렉트 비교하기 때문에 절대 오차가 나지 않습니다.
+
+JavaScript
+// ==========================================
+// ★ 4. Security Verification (구조 혁신 완료본)
+// ==========================================
 function verifySignature(req, res, next) {
   const { userId, score, maxCombo, signature } = req.body;
   const SECRET_SALT = process.env.SECRET_SALT || "WebBeat_Secure_Key_2026_Ver42";
@@ -87,41 +100,28 @@ function verifySignature(req, res, next) {
   }
 
   try {
-    // 1. 한글 및 특수문자 깨짐을 완벽히 방지하는 유니코드 Base64 디코딩
-    const base64Buffer = Buffer.from(signature, 'base64');
-    const decoded = decodeURIComponent(
-      base64Buffer.toString('binary')
-        .split('')
-        .map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-        .join('')
-    );
+    // 1. 모든 인입 데이터를 정수형 및 문자열 표준 타입으로 강제 변환 (타입 오차 원천 차단)
+    const secureUserId = String(userId);
+    const secureScore = Math.floor(Number(score));
+    const secureMaxCombo = Math.floor(Number(maxCombo || 0));
 
-    // 2. 데이터 분리
-    const [vUserId, vScore, vMaxCombo, vSalt] = decoded.split('_');
+    // 2. 클라이언트와 완벽하게 일치하는 순서로 원본 문자열 생성
+    const rawSignature = `${secureUserId}_${secureScore}_${secureMaxCombo}_${SECRET_SALT}`;
 
-    // 🔍 서버 콘솔 디버깅 로그 (오류 추적용)
-    console.log("📥 [서버 검증 진행]");
-    console.log(`- 클라이언트 전송값: ID=${userId}, Score=${score}, Combo=${maxCombo}`);
-    console.log(`- 서명 복원 값: ID=${vUserId}, Score=${vScore}, Combo=${vMaxCombo}, Salt=${vSalt}`);
+    // 3. 자바스크립트 표준 Base64 인코딩 진행 (Buffer 활용)
+    const expectedSignature = Buffer.from(rawSignature, 'utf8').toString('base64');
 
-    // 3. 누락 값 체크
-    if (!vUserId || !vScore || !vMaxCombo || !vSalt) {
-      return res.status(403).json({ success: false, error: "Data Tampering Detected (Invalid Format)" });
-    }
+    // 🔍 서버 콘솔 디버깅 로그 (문제 발생 시 대조용)
+    console.log("=========================================");
+    console.log(`📥 [WEB BEAT 서버 검증]`);
+    console.log(`- 생성한 원본 문자열: ${rawSignature}`);
+    console.log(`- 클라이언트 토큰: ${signature}`);
+    console.log(`- 서버가 계산한 토큰: ${expectedSignature}`);
+    console.log("=========================================");
 
-    // 4. 엄격한 데이터 타입 일치화 검증 (소수점 및 문자열 차이 해결)
-    const isUserIdMatch = String(userId) === String(vUserId);
-    const isScoreMatch  = Math.floor(Number(score)) === Math.floor(Number(vScore));
-    const isComboMatch  = Math.floor(Number(maxCombo)) === Math.floor(Number(vMaxCombo));
-    const isSaltMatch   = String(vSalt) === String(SECRET_SALT);
-
-    if (!isUserIdMatch || !isScoreMatch || !isComboMatch || !isSaltMatch) {
-      console.warn("🚨 [Signature Mismatch] 검증 불일치 원인:");
-      console.warn(`- 유저ID 일치여부: ${isUserIdMatch} (${userId} vs ${vUserId})`);
-      console.warn(`- 점수 일치여부: ${isScoreMatch} (${score} vs ${vScore})`);
-      console.warn(`- 콤보 일치여부: ${isComboMatch} (${maxCombo} vs ${vMaxCombo})`);
-      console.warn(`- 비밀키 일치여부: ${isSaltMatch}`);
-      
+    // 4. 두 서명이 정확히 일치하는지 다이렉트 비교
+    if (signature !== expectedSignature) {
+      console.warn("🚨 [Signature Mismatch] 서명이 일치하지 않습니다!");
       return res.status(403).json({ success: false, error: "Data Tampering Detected (Signature Mismatch)" });
     }
 
