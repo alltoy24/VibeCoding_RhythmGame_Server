@@ -81,23 +81,36 @@ const User = mongoose.model("User", userSchema);
 const verifySignature = (req, res, next) => {
     const { userId, score, maxCombo, signature, playTime } = req.body;
     
-    if (!userId || score === undefined || maxCombo === undefined || !signature) {
+    // 1. 필수 데이터 검증 (maxCombo가 안 넘어오는 경우 유연하게 대처)
+    if (!userId || score === undefined || !signature) {
         return res.status(400).json({ error: "Invalid Request (Missing Data)" });
     }
 
-    // Anti-Cheat: Playtime check
-    if (playTime && playTime < 10000) {
-        console.warn(`🚨 [HACK] Short PlayTime: ${playTime}ms (${userId})`);
+    // 2. Anti-Cheat: 플레이 타임 제한 완화 (판정이 빡빡해져 폭사하는 경우 대비)
+    // 기존 10000ms(10초) 제한을 테스트 및 폭사를 고려해 2000ms(2초)로 낮추거나 필요시 주석 처리하세요.
+    if (playTime && playTime < 2000) { 
+        console.warn(`🚨 [HACK] Too Short PlayTime: ${playTime}ms (${userId})`);
         return res.status(403).json({ error: "Abnormal play detected" });
     }
 
-    // Signature Verification
+    // 3. Signature Verification
     const serverSecret = process.env.SECRET_SALT || "WebBeat_Secure_Key_2026_Ver42"; 
-    const rawString = `${userId}_${score}_${maxCombo}_${serverSecret}`;
+    
+    // 클라이언트가 maxCombo를 안 보냈을 때를 대비해 기본값 0 처리
+    const safeMaxCombo = maxCombo !== undefined ? maxCombo : 0;
+    
+    const rawString = `${userId}_${score}_${safeMaxCombo}_${serverSecret}`;
     const expectedSignature = Buffer.from(rawString).toString('base64');
 
     if (signature !== expectedSignature) {
-        console.log("🚨 [Signature Mismatch] Hack Suspected!");
+        // 🔥 어떤 데이터 때문에 불일치가 났는지 서버 콘솔에서 눈으로 확인하기 위한 디버깅 로그
+        console.error("==================================================");
+        console.error("[Signature Mismatch] 점수 불일치 오류 발생");
+        console.error(`- 클라이언트가 보낸 서명: ${signature}`);
+        console.error(`- 서버가 예상한 서명 원본 문자열: ${rawString}`);
+        console.error(`- 요청 본문 데이터(body):`, req.body);
+        console.error("==================================================");
+        
         return res.status(403).json({ error: "Data Tampering Detected" });
     }
 
@@ -293,28 +306,51 @@ io.on("connection", (socket) => {
         console.log(`🏠 Created: ${data.title} (${roomId}) - Host RP: ${userRating}`);
     });
 
-    socket.on("game_over", (data) => {
-        const { roomId, finishType } = data;
+    // 서버 코드의 game_over 내부 수정 예시
+    socket.on("game_over", async (data) => {
+        const { roomId, finishType, finalScore } = data; // 클라이언트가 최종 점수도 보내도록 변경
         const room = rooms[roomId];
         if (!room) return;
 
-        // 상대방에게 결과 알림
-        socket.to(roomId).emit("opponent_finished", { finishType });
-
-        // 내 상태 '완료'로 변경
         const player = room.players.find(p => p.socketId === socket.id);
         if (player) {
             player.finished = true;
-            console.log(`🏁 Finished: ${player.nickname}`);
+            player.finalScore = finalScore || 0; // 점수 기록
         }
 
-        // ★ [핵심] 방 폭파 조건 수정
-        // 조건: (게임 끝난 사람) OR (탈주해서 연결 끊긴 사람)
         const allFinished = room.players.every(p => p.finished === true || p.connected === false);
 
         if (allFinished) {
-            delete rooms[roomId]; // 방 삭제 💥
-            console.log(`💥 Room Closed (All Done): ${roomId}`);
+            // 2인 플레이어이고 모두 정상 종료했을 때 승패 및 RP 계산
+            const p1 = room.players[0];
+            const p2 = room.players[1];
+
+            if (p1 && p2 && p1.connected && p2.connected) {
+                let p1_Win = p1.finalScore > p2.finalScore ? 1 : (p1.finalScore < p2.finalScore ? 0 : 0.5);
+                
+                // 간단한 Elo 계산 예시 (K-Factor = 32)
+                const E1 = 1 / (1 + Math.pow(10, (p2.rating - p1.rating) / 400));
+                const E2 = 1 / (1 + Math.pow(10, (p1.rating - p2.rating) / 400));
+                
+                const p1_NewRating = Math.round(p1.rating + 32 * (p1_Win - E1));
+                const p2_NewRating = Math.round(p2.rating + 32 * ((1 - p1_Win) - E2));
+
+                // DB 업데이트
+                try {
+                    await User.updateOne({ nickname: p1.nickname }, { $set: { rating: p1_NewRating }, $inc: { matchCount: 1, winCount: p1_Win === 1 ? 1 : 0 } });
+                    await User.updateOne({ nickname: p2.nickname }, { $set: { rating: p2_NewRating }, $inc: { matchCount: 1, winCount: p1_Win === 0 ? 1 : 0 } });
+                    
+                    // 양쪽 클라이언트에 매치 결과 전송
+                    io.to(roomId).emit("match_result", {
+                        results: [
+                            { nickname: p1.nickname, score: p1.finalScore, oldRp: p1.rating, newRp: p1_NewRating },
+                            { nickname: p2.nickname, score: p2.finalScore, oldRp: p2.rating, newRp: p2_NewRating }
+                        ]
+                    });
+                } catch (e) { console.error("RP Update Error:", e); }
+            }
+
+            delete rooms[roomId];
             io.emit("update_room_list", getRoomList());
         }
     });
