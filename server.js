@@ -78,44 +78,60 @@ const User = mongoose.model("User", userSchema);
 // ==========================================
 // ★ 4. Security Verification (Core Logic)
 // ==========================================
-const verifySignature = (req, res, next) => {
-    const { userId, score, maxCombo, signature, playTime } = req.body;
-    
-    // 1. 필수 데이터 검증 (maxCombo가 안 넘어오는 경우 유연하게 대처)
-    if (!userId || score === undefined || !signature) {
-        return res.status(400).json({ error: "Invalid Request (Missing Data)" });
+function verifySignature(req, res, next) {
+  const { userId, score, maxCombo, signature } = req.body;
+  const SECRET_SALT = process.env.SECRET_SALT || "WebBeat_Secure_Key_2026_Ver42";
+
+  if (!signature) {
+    return res.status(403).json({ success: false, error: "Security Token Missing" });
+  }
+
+  try {
+    // 1. 한글 및 특수문자 깨짐을 완벽히 방지하는 유니코드 Base64 디코딩
+    const base64Buffer = Buffer.from(signature, 'base64');
+    const decoded = decodeURIComponent(
+      base64Buffer.toString('binary')
+        .split('')
+        .map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join('')
+    );
+
+    // 2. 데이터 분리
+    const [vUserId, vScore, vMaxCombo, vSalt] = decoded.split('_');
+
+    // 🔍 서버 콘솔 디버깅 로그 (오류 추적용)
+    console.log("📥 [서버 검증 진행]");
+    console.log(`- 클라이언트 전송값: ID=${userId}, Score=${score}, Combo=${maxCombo}`);
+    console.log(`- 서명 복원 값: ID=${vUserId}, Score=${vScore}, Combo=${vMaxCombo}, Salt=${vSalt}`);
+
+    // 3. 누락 값 체크
+    if (!vUserId || !vScore || !vMaxCombo || !vSalt) {
+      return res.status(403).json({ success: false, error: "Data Tampering Detected (Invalid Format)" });
     }
 
-    // 2. Anti-Cheat: 플레이 타임 제한 완화 (판정이 빡빡해져 폭사하는 경우 대비)
-    // 기존 10000ms(10초) 제한을 테스트 및 폭사를 고려해 2000ms(2초)로 낮추거나 필요시 주석 처리하세요.
-    if (playTime && playTime < 2000) { 
-        console.warn(`🚨 [HACK] Too Short PlayTime: ${playTime}ms (${userId})`);
-        return res.status(403).json({ error: "Abnormal play detected" });
+    // 4. 엄격한 데이터 타입 일치화 검증 (소수점 및 문자열 차이 해결)
+    const isUserIdMatch = String(userId) === String(vUserId);
+    const isScoreMatch  = Math.floor(Number(score)) === Math.floor(Number(vScore));
+    const isComboMatch  = Math.floor(Number(maxCombo)) === Math.floor(Number(vMaxCombo));
+    const isSaltMatch   = String(vSalt) === String(SECRET_SALT);
+
+    if (!isUserIdMatch || !isScoreMatch || !isComboMatch || !isSaltMatch) {
+      console.warn("🚨 [Signature Mismatch] 검증 불일치 원인:");
+      console.warn(`- 유저ID 일치여부: ${isUserIdMatch} (${userId} vs ${vUserId})`);
+      console.warn(`- 점수 일치여부: ${isScoreMatch} (${score} vs ${vScore})`);
+      console.warn(`- 콤보 일치여부: ${isComboMatch} (${maxCombo} vs ${vMaxCombo})`);
+      console.warn(`- 비밀키 일치여부: ${isSaltMatch}`);
+      
+      return res.status(403).json({ success: false, error: "Data Tampering Detected (Signature Mismatch)" });
     }
 
-    // 3. Signature Verification
-    const serverSecret = process.env.SECRET_SALT || "WebBeat_Secure_Key_2026_Ver42"; 
-    
-    // 클라이언트가 maxCombo를 안 보냈을 때를 대비해 기본값 0 처리
-    const safeMaxCombo = maxCombo !== undefined ? maxCombo : 0;
-    
-    const rawString = `${userId}_${score}_${safeMaxCombo}_${serverSecret}`;
-    const expectedSignature = Buffer.from(rawString).toString('base64');
-
-    if (signature !== expectedSignature) {
-        // 🔥 어떤 데이터 때문에 불일치가 났는지 서버 콘솔에서 눈으로 확인하기 위한 디버깅 로그
-        console.error("==================================================");
-        console.error("[Signature Mismatch] 점수 불일치 오류 발생");
-        console.error(`- 클라이언트가 보낸 서명: ${signature}`);
-        console.error(`- 서버가 예상한 서명 원본 문자열: ${rawString}`);
-        console.error(`- 요청 본문 데이터(body):`, req.body);
-        console.error("==================================================");
-        
-        return res.status(403).json({ error: "Data Tampering Detected" });
-    }
-
+    // 검증 성공 시 다음 로직 진행
     next();
-};
+  } catch (err) {
+    console.error("🚨 서버 서명 검증 중 크리티컬 에러:", err);
+    return res.status(403).json({ success: false, error: "Security Token Validation Failed" });
+  }
+}
 
 // ==========================================
 // ★ 5. Multiplayer Logic (Refactored)
