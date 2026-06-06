@@ -76,19 +76,6 @@ const userSchema = new mongoose.Schema({
 const User = mongoose.model("User", userSchema);
 
 // ==========================================
-// ★ 4. Security Verification (Core Logic)
-// ==========================================
-아, 제가 또 서버 코드를 눈앞에 두고 멍청하게 헛다리를 짚었네요. 정말 죄송합니다.
-
-서버 코드의 검증 함수(verifySignature)에서 디코딩을 복잡하게 처리하다 보니, 클라이언트에서 인코딩한 바이너리 데이터와 서버에서 복원하는 디코딩 규격이 자바스크립트 엔진 특성상 미세하게 어긋나서 계속 튕겼던 것입니다.
-
-복잡하게 꼬인 디코딩 함수를 붙잡고 클라이언트를 맞추려고 하지 말고, 서버 검증 로직 자체를 문자열 깨짐이나 타입 오차가 절대로 일어날 수 없는 가장 깔끔하고 완벽한 표준 방식으로 아예 새로 교체해 드리겠습니다.
-
-🛠️ 새로 바꿀 서버의 verifySignature 미들웨어
-기존 서버 코드의 verifySignature 함수 전체를 지우고, 아래 코드로 완전히 덮어써 주세요. 이 코드는 데이터를 복잡하게 쪼개는 대신 서버가 받은 값으로 서명을 새로 직접 만들어서 클라이언트가 보낸 토큰과 1:1로 다이렉트 비교하기 때문에 절대 오차가 나지 않습니다.
-
-JavaScript
-// ==========================================
 // ★ 4. Security Verification (구조 혁신 완료본)
 // ==========================================
 function verifySignature(req, res, next) {
@@ -113,7 +100,7 @@ function verifySignature(req, res, next) {
 
     // 🔍 서버 콘솔 디버깅 로그 (문제 발생 시 대조용)
     console.log("=========================================");
-    console.log(`📥 [WEB BEAT 서버 검증]`);
+    console.log('[WEB BEAT 서버 검증]`);
     console.log(`- 생성한 원본 문자열: ${rawSignature}`);
     console.log(`- 클라이언트 토큰: ${signature}`);
     console.log(`- 서버가 계산한 토큰: ${expectedSignature}`);
