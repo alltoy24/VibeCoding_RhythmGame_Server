@@ -100,7 +100,7 @@ function verifySignature(req, res, next) {
 
     // 🔍 서버 콘솔 디버깅 로그 (문제 발생 시 대조용)
     console.log("=========================================");
-    console.log('[WEB BEAT 서버 검증]`);
+    console.log('[WEB BEAT 서버 검증]');
     console.log(`- 생성한 원본 문자열: ${rawSignature}`);
     console.log(`- 클라이언트 토큰: ${signature}`);
     console.log(`- 서버가 계산한 토큰: ${expectedSignature}`);
