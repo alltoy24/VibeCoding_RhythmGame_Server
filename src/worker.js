@@ -2,6 +2,15 @@ const JUDGMENT_KEYS = ["absoluteSync", "tpPerfect", "perfect", "good", "bad", "m
 const STANDARD_WEIGHTS = { absoluteSync: 0, tpPerfect: 1, perfect: 1, good: 0.7, bad: 0.3, miss: 0 };
 const PRECISION_WEIGHTS = { absoluteSync: 1, tpPerfect: 0.9, perfect: 0.8, good: 0.6, bad: 0.4, miss: 0 };
 const LEGACY_SIGNATURE_SALT = "WebBeat_Secure_Key_2026_Ver42";
+const STANDARD_GRADE_TABLE = [
+  { min: 950000, label: "S+", kind: "grade-splus" },
+  { min: 900000, label: "S", kind: "grade-s" },
+  { min: 850000, label: "A+", kind: "grade-aplus" },
+  { min: 800000, label: "A", kind: "grade-a" },
+  { min: 700000, label: "B", kind: "grade-b" },
+  { min: 600000, label: "C", kind: "grade-c" },
+  { min: 0, label: "FAILED", kind: "grade-failed" }
+];
 
 function corsHeaders(request, env) {
   const configured = String(env.ALLOWED_ORIGIN || "*").split(",").map((value) => value.trim());
@@ -165,13 +174,40 @@ async function saveScore(request, env) {
 
 async function getRanking(env, song, diff) {
   const { results } = await env.DB.prepare(
-    `SELECT user_id AS userId, user_name AS userName, score, level
+    `SELECT user_id AS userId, user_name AS userName, score, level, mode,
+            absolute_sync AS absoluteSync, tp_perfect AS tpPerfect, perfect, good, bad, miss,
+            total_notes AS totalNotes
        FROM score_records
       WHERE song = ?1 AND diff = ?2
       ORDER BY score DESC, updated_at ASC
       LIMIT 50`
   ).bind(song, diff).all();
-  return results;
+  return results.map((record) => ({ ...record, ...getRankingStatus(record) }));
+}
+
+function getRankingStatus(record) {
+  const totalNotes = Number(record.totalNotes) || 0;
+  const absoluteSync = Number(record.absoluteSync) || 0;
+  const tpPerfect = Number(record.tpPerfect) || 0;
+  const perfect = Number(record.perfect) || 0;
+  const bad = Number(record.bad) || 0;
+  const miss = Number(record.miss) || 0;
+
+  if (record.mode === "precision") {
+    return totalNotes > 0 && absoluteSync === totalNotes
+      ? { rankLabel: "|SYNC|", rankKind: "sync-full" }
+      : { rankLabel: "SYNC", rankKind: "sync" };
+  }
+
+  if (totalNotes > 0 && tpPerfect + perfect === totalNotes) {
+    return { rankLabel: "TB", rankKind: "tb" };
+  }
+  if (totalNotes > 0 && bad + miss === 0) {
+    return { rankLabel: "FC", rankKind: "fc" };
+  }
+  const grade = STANDARD_GRADE_TABLE.find((item) => Number(record.score) >= item.min)
+    || STANDARD_GRADE_TABLE[STANDARD_GRADE_TABLE.length - 1];
+  return { rankLabel: grade.label, rankKind: grade.kind };
 }
 
 async function getUser(env, userId) {
