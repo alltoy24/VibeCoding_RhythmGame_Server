@@ -90,6 +90,27 @@ const User = mongoose.model("User", userSchema);
 // ==========================================
 const JUDGMENT_KEYS = ["absoluteSync", "tpPerfect", "perfect", "good", "bad", "miss"];
 const PRECISION_WEIGHTS = { absoluteSync: 1.0, tpPerfect: 0.90, perfect: 0.80, good: 0.60, bad: 0.40, miss: 0 };
+const STANDARD_WEIGHTS = { absoluteSync: 0, tpPerfect: 1.0, perfect: 1.0, good: 0.70, bad: 0.40, miss: 0 };
+const STANDARD_JUDGMENT_PORTION = 0.70;
+const STANDARD_COMBO_PORTION = 0.30;
+
+function calculateStandardScore(stats, maxCombo, totalNotes) {
+  const judgmentRatio = JUDGMENT_KEYS.reduce(
+    (sum, key) => sum + (stats[key] * STANDARD_WEIGHTS[key]), 0
+  ) / totalNotes;
+  const comboRatio = Math.max(0, Math.min(1, maxCombo / totalNotes));
+  const score = 1000000 * (
+    (judgmentRatio * STANDARD_JUDGMENT_PORTION) +
+    (comboRatio * STANDARD_COMBO_PORTION)
+  );
+  return Math.floor(score + 0.0000001);
+}
+
+function calculatePrecisionScore(stats, totalNotes) {
+  return Math.floor((1000000 * JUDGMENT_KEYS.reduce(
+    (sum, key) => sum + (stats[key] * PRECISION_WEIGHTS[key]), 0
+  )) / totalNotes);
+}
 
 function isPrecisionEligibleDiff(diff) {
   // Normal/Hard는 일반 점수 전용이다. Troll 및 특수 난이도만 동기화 연주를 허용한다.
@@ -130,19 +151,23 @@ function validateJudgmentPayload(body) {
     return { error: "ABSOLUTE SYNC judgments require precision mode" };
   }
 
-  const weights = mode === "precision"
-    ? PRECISION_WEIGHTS
-    : { absoluteSync: 0, tpPerfect: 1.0, perfect: 1.0, good: 0.70, bad: 0.30, miss: 0 };
-  const expectedScore = Math.floor((1000000 * JUDGMENT_KEYS.reduce(
-    (sum, key) => sum + (stats[key] * weights[key]), 0
-  )) / totalNotes);
   const suppliedScore = Number(body.score);
   const maxCombo = Number(body.maxCombo || 0);
-  if (!Number.isInteger(suppliedScore) || suppliedScore !== expectedScore) {
-    return { error: "Score does not match judgments" };
-  }
+  const comboBreaks = stats.bad + stats.miss;
   if (!Number.isInteger(maxCombo) || maxCombo < 0 || maxCombo > totalNotes) {
     return { error: "Invalid max combo" };
+  }
+  if (maxCombo > totalNotes - comboBreaks) {
+    return { error: "Invalid max combo for judgments" };
+  }
+  if (comboBreaks === 0 && maxCombo !== totalNotes) {
+    return { error: "Full combo is required for these judgments" };
+  }
+  const expectedScore = mode === "precision"
+    ? calculatePrecisionScore(stats, totalNotes)
+    : calculateStandardScore(stats, maxCombo, totalNotes);
+  if (!Number.isInteger(suppliedScore) || suppliedScore !== expectedScore) {
+    return { error: "Score does not match judgments" };
   }
 
   return { stats, totalNotes, expectedScore, maxCombo, mode };

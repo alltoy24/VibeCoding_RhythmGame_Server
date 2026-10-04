@@ -1,6 +1,8 @@
 const JUDGMENT_KEYS = ["absoluteSync", "tpPerfect", "perfect", "good", "bad", "miss"];
-const STANDARD_WEIGHTS = { absoluteSync: 0, tpPerfect: 1, perfect: 1, good: 0.7, bad: 0.3, miss: 0 };
+const STANDARD_WEIGHTS = { absoluteSync: 0, tpPerfect: 1, perfect: 1, good: 0.7, bad: 0.4, miss: 0 };
 const PRECISION_WEIGHTS = { absoluteSync: 1, tpPerfect: 0.9, perfect: 0.8, good: 0.6, bad: 0.4, miss: 0 };
+const STANDARD_JUDGMENT_PORTION = 0.70;
+const STANDARD_COMBO_PORTION = 0.30;
 const LEGACY_SIGNATURE_SALT = "WebBeat_Secure_Key_2026_Ver42";
 const STANDARD_GRADE_TABLE = [
   { min: 950000, label: "S+", kind: "grade-splus" },
@@ -71,6 +73,24 @@ function normaliseJudgments(details, totalNotes) {
   return stats;
 }
 
+function calculateStandardScore(stats, maxCombo, totalNotes) {
+  const judgmentRatio = JUDGMENT_KEYS.reduce(
+    (sum, key) => sum + stats[key] * STANDARD_WEIGHTS[key], 0
+  ) / totalNotes;
+  const comboRatio = Math.max(0, Math.min(1, maxCombo / totalNotes));
+  const score = 1000000 * (
+    (judgmentRatio * STANDARD_JUDGMENT_PORTION) +
+    (comboRatio * STANDARD_COMBO_PORTION)
+  );
+  return Math.floor(score + 0.0000001);
+}
+
+function calculatePrecisionScore(stats, totalNotes) {
+  return Math.floor((1000000 * JUDGMENT_KEYS.reduce(
+    (sum, key) => sum + stats[key] * PRECISION_WEIGHTS[key], 0
+  )) / totalNotes);
+}
+
 function base64Utf8(value) {
   const bytes = new TextEncoder().encode(value);
   let binary = "";
@@ -113,12 +133,14 @@ function verifyScorePayload(body, env) {
   const stats = normaliseJudgments(body?.details, totalNotes);
   if (mode === "standard" && stats.absoluteSync !== 0) throw new Error("Invalid standard judgments");
 
-  const weights = mode === "precision" ? PRECISION_WEIGHTS : STANDARD_WEIGHTS;
-  const expectedScore = Math.floor((1000000 * JUDGMENT_KEYS.reduce(
-    (sum, key) => sum + stats[key] * weights[key], 0
-  )) / totalNotes);
   const suppliedScore = cleanInteger(body?.score, "score", { min: 0, max: 1000000 });
   const maxCombo = cleanInteger(body?.maxCombo ?? 0, "max combo", { min: 0, max: totalNotes });
+  const comboBreaks = stats.bad + stats.miss;
+  if (maxCombo > totalNotes - comboBreaks) throw new Error("Invalid max combo for judgments");
+  if (comboBreaks === 0 && maxCombo !== totalNotes) throw new Error("Full combo is required for these judgments");
+  const expectedScore = mode === "precision"
+    ? calculatePrecisionScore(stats, totalNotes)
+    : calculateStandardScore(stats, maxCombo, totalNotes);
   const level = cleanInteger(body?.level ?? 1, "level", { min: 1, max: 9999 });
   const signature = cleanText(body?.signature, "signature", 4096);
 
