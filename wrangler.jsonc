@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "webbeat-api",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-10-04",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "webbeat-db",
+      "database_id": "907c7db5-03c7-4ce5-8220-97dec115703e"
+    }
+  ],
+  "vars": {
+    "ALLOWED_ORIGIN": "*"
+  }
+}

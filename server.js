@@ -56,8 +56,18 @@ const scoreSchema = new mongoose.Schema({
   userName: String,
   song: String,
   diff: String,
+  mode: { type: String, default: "standard" },
   score: Number,
   level: Number,
+  judgment: {
+    absoluteSync: Number,
+    tpPerfect: Number,
+    perfect: Number,
+    good: Number,
+    bad: Number,
+    miss: Number,
+    totalNotes: Number
+  },
   timestamp: { type: Date, default: Date.now }
 });
 scoreSchema.index({ userId: 1, song: 1, diff: 1 }, { unique: true });
@@ -76,8 +86,68 @@ const userSchema = new mongoose.Schema({
 const User = mongoose.model("User", userSchema);
 
 // ==========================================
-// ★ 4. Security Verification (구조 혁신 완료본)
+// ★ 4. Security Verification
 // ==========================================
+const JUDGMENT_KEYS = ["absoluteSync", "tpPerfect", "perfect", "good", "bad", "miss"];
+const PRECISION_WEIGHTS = { absoluteSync: 1.0, tpPerfect: 0.90, perfect: 0.80, good: 0.60, bad: 0.40, miss: 0 };
+
+function isPrecisionEligibleDiff(diff) {
+  // Normal/Hard는 일반 점수 전용이다. Troll 및 특수 난이도만 동기화 연주를 허용한다.
+  const chartKey = String(diff || "").replace(/__precision$/i, "");
+  return !/^(?:normal|hard)(?:_|$)/i.test(chartKey);
+}
+
+function validateJudgmentPayload(body) {
+  const details = body && body.details;
+  const totalNotes = Number(body && body.totalNotes);
+  const requestedMode = body ? body.mode : undefined;
+  const mode = requestedMode === undefined ? "standard" : String(requestedMode);
+  if (mode !== "standard" && mode !== "precision") {
+    return { error: "Invalid score mode" };
+  }
+  if (mode === "precision" && !isPrecisionEligibleDiff(body && body.diff)) {
+    return { error: "Precision mode is only available for Troll and special charts" };
+  }
+  if (!details || typeof details !== "object" || !Number.isInteger(totalNotes) || totalNotes <= 0) {
+    return { error: "Judgment details are required" };
+  }
+
+  const stats = {};
+  for (const key of JUDGMENT_KEYS) {
+    // 기존 일반 모드 클라이언트에는 absoluteSync 필드가 없으므로 0으로 호환한다.
+    const value = key === "absoluteSync" && details[key] === undefined ? 0 : Number(details[key]);
+    if (!Number.isInteger(value) || value < 0) {
+      return { error: `Invalid judgment count: ${key}` };
+    }
+    stats[key] = value;
+  }
+
+  const judgedNotes = JUDGMENT_KEYS.reduce((sum, key) => sum + stats[key], 0);
+  if (judgedNotes !== totalNotes) {
+    return { error: "Judgment count does not match total notes" };
+  }
+  if (mode === "standard" && stats.absoluteSync !== 0) {
+    return { error: "ABSOLUTE SYNC judgments require precision mode" };
+  }
+
+  const weights = mode === "precision"
+    ? PRECISION_WEIGHTS
+    : { absoluteSync: 0, tpPerfect: 1.0, perfect: 1.0, good: 0.70, bad: 0.30, miss: 0 };
+  const expectedScore = Math.floor((1000000 * JUDGMENT_KEYS.reduce(
+    (sum, key) => sum + (stats[key] * weights[key]), 0
+  )) / totalNotes);
+  const suppliedScore = Number(body.score);
+  const maxCombo = Number(body.maxCombo || 0);
+  if (!Number.isInteger(suppliedScore) || suppliedScore !== expectedScore) {
+    return { error: "Score does not match judgments" };
+  }
+  if (!Number.isInteger(maxCombo) || maxCombo < 0 || maxCombo > totalNotes) {
+    return { error: "Invalid max combo" };
+  }
+
+  return { stats, totalNotes, expectedScore, maxCombo, mode };
+}
+
 function verifySignature(req, res, next) {
   const { userId, score, maxCombo, signature } = req.body;
   const SECRET_SALT = process.env.SECRET_SALT || "WebBeat_Secure_Key_2026_Ver42";
@@ -87,32 +157,45 @@ function verifySignature(req, res, next) {
   }
 
   try {
+    const judgment = validateJudgmentPayload(req.body);
+    if (judgment.error) {
+      return res.status(400).json({ success: false, error: judgment.error });
+    }
+
     // 1. 모든 인입 데이터를 정수형 및 문자열 표준 타입으로 강제 변환 (타입 오차 원천 차단)
     const secureUserId = String(userId);
-    const secureScore = Math.floor(Number(score));
-    const secureMaxCombo = Math.floor(Number(maxCombo || 0));
+    const secureScore = judgment.expectedScore;
+    const secureMaxCombo = judgment.maxCombo;
+    const judgeSignature = [
+      judgment.stats.absoluteSync,
+      judgment.stats.tpPerfect,
+      judgment.stats.perfect,
+      judgment.stats.good,
+      judgment.stats.bad,
+      judgment.stats.miss,
+      judgment.totalNotes
+    ].join(':');
 
-    // 2. 클라이언트와 완벽하게 일치하는 순서로 원본 문자열 생성
-    const rawSignature = `${secureUserId}_${secureScore}_${secureMaxCombo}_${SECRET_SALT}`;
-
-    // 3. 자바스크립트 표준 Base64 인코딩 진행 (Buffer 활용)
+    // 새 형식과 이미 배포된 클라이언트의 기본 형식을 함께 허용한다.
+    // 어느 경우든 아래 판정 통계/점수 재계산 검증은 반드시 통과해야 한다.
+    const rawSignature = `${secureUserId}_${secureScore}_${secureMaxCombo}_${judgeSignature}_${SECRET_SALT}`;
+    const precisionRawSignature = `${secureUserId}_${secureScore}_${secureMaxCombo}_${judgment.mode}_${judgeSignature}_${SECRET_SALT}`;
+    const legacyRawSignature = `${secureUserId}_${secureScore}_${secureMaxCombo}_${SECRET_SALT}`;
     const expectedSignature = Buffer.from(rawSignature, 'utf8').toString('base64');
+    const precisionExpectedSignature = Buffer.from(precisionRawSignature, 'utf8').toString('base64');
+    const legacyExpectedSignature = Buffer.from(legacyRawSignature, 'utf8').toString('base64');
 
-    // 🔍 서버 콘솔 디버깅 로그 (문제 발생 시 대조용)
-    console.log("=========================================");
-    console.log('[WEB BEAT 서버 검증]');
-    console.log(`- 생성한 원본 문자열: ${rawSignature}`);
-    console.log(`- 클라이언트 토큰: ${signature}`);
-    console.log(`- 서버가 계산한 토큰: ${expectedSignature}`);
-    console.log("=========================================");
-
-    // 4. 두 서명이 정확히 일치하는지 다이렉트 비교
-    if (signature !== expectedSignature) {
+    const signatureValid = judgment.mode === "precision"
+      ? signature === precisionExpectedSignature
+      : signature === expectedSignature || signature === legacyExpectedSignature;
+    if (!signatureValid) {
       console.warn("🚨 [Signature Mismatch] 서명이 일치하지 않습니다!");
       return res.status(403).json({ success: false, error: "Data Tampering Detected (Signature Mismatch)" });
     }
 
     // 검증 성공 시 다음 로직 진행
+    req.verifiedScore = judgment.expectedScore;
+    req.verifiedJudgments = judgment;
     next();
   } catch (err) {
     console.error("🚨 서버 서명 검증 중 크리티컬 에러:", err);
@@ -515,17 +598,28 @@ io.on("connection", (socket) => {
 
 // [API 1] Save Score
 app.post("/api/score", verifySignature, async (req, res) => {
-  const { userId, userName, song, diff, score, level } = req.body;
+  const { userId, userName, song, diff, level } = req.body;
   try {
-    const cleanScore = Number(score);
-    if (isNaN(cleanScore) || cleanScore > 1000000) return res.status(400).json({ error: "Invalid Score" });
+    const cleanScore = req.verifiedScore;
+    const verified = req.verifiedJudgments;
+    if (!Number.isInteger(cleanScore) || cleanScore < 0 || cleanScore > 1000000 || !verified) {
+      return res.status(400).json({ error: "Invalid Score" });
+    }
 
     await Score.updateOne(
       { userId, song, diff }, 
-      { $max: { score: cleanScore }, $set: { userName: userName, level: Number(level) || 1 } },
+      {
+        $max: { score: cleanScore },
+        $set: {
+          userName: userName,
+          level: Number(level) || 1,
+          mode: verified.mode,
+          judgment: { ...verified.stats, totalNotes: verified.totalNotes }
+        }
+      },
       { upsert: true }
     );
-    console.log(`[SCORE] ${userName}: ${cleanScore}`);
+    console.log(`[SCORE] ${userName}: ${cleanScore} (${verified.mode})`);
     res.json({ success: true });
   } catch (e) {
     if (e.code === 11000) return res.json({ success: true });
