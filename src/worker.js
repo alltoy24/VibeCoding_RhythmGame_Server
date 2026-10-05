@@ -4,6 +4,13 @@ const PRECISION_WEIGHTS = { absoluteSync: 1, tpPerfect: 0.9, perfect: 0.8, good:
 const STANDARD_JUDGMENT_PORTION = 0.70;
 const STANDARD_COMBO_PORTION = 0.30;
 const LEGACY_SIGNATURE_SALT = "WebBeat_Secure_Key_2026_Ver42";
+// RATE is stored and displayed as a percentage with two decimal places.  The
+// database derives it from verified judgments, rather than trusting the client.
+const STANDARD_RATE_SQL = "(tp_perfect * 100.0 + perfect * 90.0 + good * 70.0 + bad * 40.0) / total_notes";
+const EXCLUDED_STANDARD_RATE_SQL = "(excluded.tp_perfect * 100.0 + excluded.perfect * 90.0 + excluded.good * 70.0 + excluded.bad * 40.0) / excluded.total_notes";
+const SHOULD_REPLACE_SCORE_SQL = `excluded.score > score_records.score
+  OR (excluded.mode = 'standard' AND excluded.score = score_records.score AND ${EXCLUDED_STANDARD_RATE_SQL} > ${STANDARD_RATE_SQL})
+  OR (excluded.mode = 'precision' AND excluded.score = score_records.score)`;
 const STANDARD_GRADE_TABLE = [
   { min: 950000, label: "S+", kind: "grade-splus" },
   { min: 900000, label: "S", kind: "grade-s" },
@@ -176,14 +183,14 @@ async function saveScore(request, env) {
         level = MAX(score_records.level, excluded.level),
         mode = excluded.mode,
         score = MAX(score_records.score, excluded.score),
-        absolute_sync = CASE WHEN excluded.score >= score_records.score THEN excluded.absolute_sync ELSE score_records.absolute_sync END,
-        tp_perfect = CASE WHEN excluded.score >= score_records.score THEN excluded.tp_perfect ELSE score_records.tp_perfect END,
-        perfect = CASE WHEN excluded.score >= score_records.score THEN excluded.perfect ELSE score_records.perfect END,
-        good = CASE WHEN excluded.score >= score_records.score THEN excluded.good ELSE score_records.good END,
-        bad = CASE WHEN excluded.score >= score_records.score THEN excluded.bad ELSE score_records.bad END,
-        miss = CASE WHEN excluded.score >= score_records.score THEN excluded.miss ELSE score_records.miss END,
-        total_notes = CASE WHEN excluded.score >= score_records.score THEN excluded.total_notes ELSE score_records.total_notes END,
-        updated_at = CASE WHEN excluded.score >= score_records.score THEN excluded.updated_at ELSE score_records.updated_at END`
+        absolute_sync = CASE WHEN ${SHOULD_REPLACE_SCORE_SQL} THEN excluded.absolute_sync ELSE score_records.absolute_sync END,
+        tp_perfect = CASE WHEN ${SHOULD_REPLACE_SCORE_SQL} THEN excluded.tp_perfect ELSE score_records.tp_perfect END,
+        perfect = CASE WHEN ${SHOULD_REPLACE_SCORE_SQL} THEN excluded.perfect ELSE score_records.perfect END,
+        good = CASE WHEN ${SHOULD_REPLACE_SCORE_SQL} THEN excluded.good ELSE score_records.good END,
+        bad = CASE WHEN ${SHOULD_REPLACE_SCORE_SQL} THEN excluded.bad ELSE score_records.bad END,
+        miss = CASE WHEN ${SHOULD_REPLACE_SCORE_SQL} THEN excluded.miss ELSE score_records.miss END,
+        total_notes = CASE WHEN ${SHOULD_REPLACE_SCORE_SQL} THEN excluded.total_notes ELSE score_records.total_notes END,
+        updated_at = CASE WHEN ${SHOULD_REPLACE_SCORE_SQL} THEN excluded.updated_at ELSE score_records.updated_at END`
     ).bind(
       payload.userId, payload.userName, payload.song, payload.diff, payload.mode, payload.score, payload.level,
       payload.stats.absoluteSync, payload.stats.tpPerfect, payload.stats.perfect, payload.stats.good,
@@ -198,10 +205,11 @@ async function getRanking(env, song, diff) {
   const { results } = await env.DB.prepare(
     `SELECT user_id AS userId, user_name AS userName, score, level, mode,
             absolute_sync AS absoluteSync, tp_perfect AS tpPerfect, perfect, good, bad, miss,
-            total_notes AS totalNotes
+            total_notes AS totalNotes,
+            CAST(ROUND(${STANDARD_RATE_SQL} * 100) AS INTEGER) AS rateBasisPoints
        FROM score_records
       WHERE song = ?1 AND diff = ?2
-      ORDER BY score DESC, updated_at ASC
+      ORDER BY score DESC, CASE WHEN mode = 'standard' THEN ${STANDARD_RATE_SQL} ELSE 0 END DESC, updated_at ASC
       LIMIT 50`
   ).bind(song, diff).all();
   return results.map((record) => ({ ...record, ...getRankingStatus(record) }));
