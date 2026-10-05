@@ -216,9 +216,12 @@ function getRankingStatus(record) {
   const miss = Number(record.miss) || 0;
 
   if (record.mode === "precision") {
-    return totalNotes > 0 && absoluteSync === totalNotes
-      ? { rankLabel: "|SYNC|", rankKind: "sync-full" }
-      : { rankLabel: "SYNC", rankKind: "sync" };
+    const fullCombo = totalNotes > 0 && bad + miss === 0;
+    const trollBeat = totalNotes > 0 && absoluteSync + tpPerfect + perfect === totalNotes;
+    if (absoluteSync === totalNotes && totalNotes > 0) return { rankLabel: "|SYNC| · TB", rankKind: "sync-full" };
+    if (trollBeat) return { rankLabel: "TB", rankKind: "tb" };
+    if (fullCombo) return { rankLabel: "FC", rankKind: "fc" };
+    return { rankLabel: "SYNC", rankKind: "sync" };
   }
 
   if (totalNotes > 0 && tpPerfect + perfect === totalNotes) {
